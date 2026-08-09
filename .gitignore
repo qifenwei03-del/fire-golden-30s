@@ -1,0 +1,8 @@
+# 編輯模式在瀏覽器裡存下來的版面／參考線（要保留就把這幾行刪掉）
+layout.json
+layout-home.json
+layout-guides.json
+
+# OS
+Thumbs.db
+.DS_Store

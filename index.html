@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<!-- is-booting 寫在標籤上（不是靠 JS 加）才會在第一次繪製前就生效，
+     避免使用者先看到還沒套用自訂版面的畫面。main.js 準備好後移除。 -->
+<html lang="zh-Hant" class="is-booting">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>火災黃金30秒 — THE GOLDEN 30 SECONDS</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Oswald:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./css/style.css">
+<link rel="stylesheet" href="./css/editor.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="app" class="app">
+
+  <!-- ============================================================
+       PAGE 1 — 第一頁 (ESC)
+       ============================================================ -->
+  <section class="page page--main is-active" data-page="first">
+    <div class="grain"></div>
+
+    <div class="layout">
+
+      <!-- ── 左＋中 ───────────────────────────────────────── -->
+      <div class="col-main">
+
+        <!-- 標題 -->
+        <header class="hero" data-obj="hero" data-label="標題">
+          <h1 class="hero__zh">火災黃金<em class="hero__num">30</em>秒</h1>
+          <p class="hero__en">THE GOLDEN 30 SECONDS</p>
+          <p class="hero__tag"><span class="tick"></span>關鍵時刻，決定生死</p>
+        </header>
+
+        <div class="mid">
+
+          <!-- 3D 模型舞台 -->
+          <div class="stage" id="stage-first" data-obj="stage" data-label="3D 模型區">
+            <div class="stage__label">3D MODEL / 逃生動線</div>
+            <div class="stage__hint" id="stage-hint">拖曳 <b>.glb / .gltf</b> 檔案到此處載入模型</div>
+            <div class="stage__loading" id="stage-loading" hidden>載入中 <span id="stage-progress">0%</span></div>
+            <ul class="legend">
+              <li><i class="dot dot--red"></i>起火點</li>
+              <li><i class="dot dot--green"></i>安全出口</li>
+            </ul>
+          </div>
+
+          <!-- 倒數面板 -->
+          <div class="timer">
+            <div class="timer__ring" data-obj="timerRing" data-label="倒數圓盤">
+              <svg class="ring" viewBox="0 0 400 400" aria-hidden="true">
+                <defs>
+                  <filter id="ringGlow" x="-50%" y="-50%" width="200%" height="200%">
+                    <feGaussianBlur stdDeviation="6" result="b"/>
+                    <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+                  </filter>
+                </defs>
+                <circle class="ring__track" cx="200" cy="200" r="176"/>
+                <circle class="ring__track ring__track--in" cx="200" cy="200" r="118"/>
+                <g class="ring__ticks" id="ring-ticks" filter="url(#ringGlow)"></g>
+                <circle class="ring__head" id="ring-head" cx="200" cy="24" r="7"/>
+              </svg>
+              <!-- 內圈上一秒一圈的彗星尾光帶 -->
+              <div class="comet" aria-hidden="true"><i></i></div>
+              <div class="timer__center">
+                <div class="timer__value"><span id="count-num">30</span><i>秒</i></div>
+                <div class="timer__caption">黃金逃生時間</div>
+              </div>
+            </div>
+            <p class="timer__foot" data-obj="timerFoot" data-label="把握 30 秒">把握 <b>30</b> 秒，安全逃生！</p>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- 小標 + 正確應對：橫跨整個版面，四格才會對到畫面正中 -->
+      <section class="acts">
+          <h2 class="acts__title" data-obj="actsTitle" data-label="小標"><span class="tick"></span>正確應對，提升生存機率</h2>
+          <ul class="acts__list">
+            <li class="act chamfer" data-obj="act1" data-label="應對 1 立即警報">
+              <span class="act__ico">
+                <svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0-6 6c0 3-1 5-2 6h16c-1-1-2-3-2-6a6 6 0 0 0-6-6Z"/><path d="M10 19a2 2 0 0 0 4 0"/><path d="M12 3V1.5"/></svg>
+              </span>
+              <b>立即警報</b><span class="act__sub">按下警報器通報</span>
+            </li>
+            <li class="act chamfer" data-obj="act2" data-label="應對 2 保持冷靜">
+              <span class="act__ico">
+                <svg viewBox="0 0 24 24"><circle cx="14" cy="4.2" r="2"/><path d="M13 8.5 9.5 11l1.8 3.2L9 21"/><path d="M13 8.5 17 10l2.5 3"/><path d="M11.3 14.2 6 13"/></svg>
+              </span>
+              <b>保持冷靜</b><span class="act__sub">循著標示逃生</span>
+            </li>
+            <li class="act chamfer" data-obj="act3" data-label="應對 3 關門阻煙">
+              <span class="act__ico">
+                <svg viewBox="0 0 24 24"><rect x="5" y="3" width="13" height="18" rx="1"/><circle cx="14.5" cy="12" r="1"/><path d="M18 21h3M3 21h2"/></svg>
+              </span>
+              <b>關門阻煙</b><span class="act__sub">隔絕火勢蔓延</span>
+            </li>
+            <li class="act chamfer" data-obj="act4" data-label="應對 4 安全集合">
+              <span class="act__ico">
+                <svg viewBox="0 0 24 24"><circle cx="8" cy="5.5" r="2.2"/><circle cx="16" cy="5.5" r="2.2"/><path d="M3.5 20v-3a4.5 4.5 0 0 1 4.5-4.5"/><path d="M20.5 20v-3A4.5 4.5 0 0 0 16 12.5"/><path d="M9.5 20v-2.5a2.5 2.5 0 0 1 5 0V20"/></svg>
+              </span>
+              <b>安全集合</b><span class="act__sub">等待消防救援</span>
+            </li>
+          </ul>
+      </section>
+
+      <!-- ── 右欄 ─────────────────────────────────────────── -->
+      <aside class="col-side">
+        <header class="side-head" data-obj="sideHead" data-label="右上標題">
+          <h2>每一秒都很關鍵</h2>
+          <p>火勢與濃煙擴散極快<br>把握逃生時機</p>
+        </header>
+
+        <ol class="phases" id="phases">
+          <li class="phase chamfer" data-phase="0" data-obj="phase1" data-label="階段 0-10 秒">
+            <span class="phase__ico">
+              <svg viewBox="0 0 24 24"><circle cx="14" cy="4.2" r="2"/><path d="M13 8.5 9.5 11l1.8 3.2L9 21"/><path d="M13 8.5 17 10l2.5 3"/><path d="M11.3 14.2 6 13"/></svg>
+            </span>
+            <div class="phase__body">
+              <b class="phase__t">0-10<i>秒</i></b>
+              <p class="phase__d">火災初期，立即警覺<br>尋找最近逃生路線</p>
+            </div>
+          </li>
+          <li class="phase chamfer" data-phase="1" data-obj="phase2" data-label="階段 10-20 秒">
+            <span class="phase__ico">
+              <svg viewBox="0 0 24 24"><path d="M12 2.5c2.4 3 1 5 0 6-1.2 1.2-3.4 1-3.4 4A3.4 3.4 0 0 0 12 16a3.4 3.4 0 0 0 3.4-3.5c0-1.6-.7-2.6-.7-2.6"/><path d="M6.4 12.8A6.5 6.5 0 0 0 12 21.5a6.5 6.5 0 0 0 5.6-8.7"/></svg>
+            </span>
+            <div class="phase__body">
+              <b class="phase__t">10-20<i>秒</i></b>
+              <p class="phase__d">火勢快速擴大<br>濃煙開始蔓延</p>
+            </div>
+          </li>
+          <li class="phase chamfer" data-phase="2" data-obj="phase3" data-label="階段 20-30 秒">
+            <span class="phase__ico">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="4.5" r="2.2"/><path d="M12 8v6"/><path d="M12 14l-3.5 6M12 14l3.5 6"/><path d="M6.5 10.5 12 9l5.5 1.5"/></svg>
+            </span>
+            <div class="phase__body">
+              <b class="phase__t">20-30<i>秒</i></b>
+              <p class="phase__d">能見度下降，吸入濃煙<br>易造成嚴重傷害</p>
+            </div>
+          </li>
+        </ol>
+      </aside>
+
+    </div>
+
+    <!-- 底部警語 -->
+    <footer class="warn chamfer" data-obj="warn" data-label="底部警語">
+      <span class="warn__ico">
+        <svg viewBox="0 0 24 24"><path d="M12 3.2 22 20.5H2L12 3.2Z"/><path d="M12 9.5v5"/><circle cx="12" cy="17.6" r=".9" fill="currentColor" stroke="none"/></svg>
+      </span>
+      <span class="warn__text">火災無情，預防先行；設備完善，守護生命</span>
+    </footer>
+  </section>
+
+  <!-- ============================================================
+       PAGE 2 — 首頁 (ENTER)
+       ============================================================ -->
+  <section class="page page--home" data-page="home">
+    <div class="grain"></div>
+
+    <div class="home">
+      <header class="home__brand" data-obj="homeBrand" data-label="標題">
+        <span class="home__mark">
+          <svg viewBox="0 0 32 24"><path d="M8.4 20.5h13.9a5.1 5.1 0 0 0 .6-10.2A7 7 0 0 0 9.3 8.1a5.4 5.4 0 0 0-.9 12.4Z"/><path d="M12.6 17.2v-2.6M15.8 17.2v-4.6M19 17.2v-3.4"/></svg>
+        </span>
+        <h1 class="home__name">雲端宅邸</h1>
+      </header>
+
+      <div class="stage home__stage" id="stage-home" data-obj="homeStage" data-label="3D 模型區">
+        <div class="stage__label">CLOUD RESIDENCE / 智慧安全系統</div>
+      </div>
+
+      <form class="home__panel chamfer" id="login-form" autocomplete="off" data-obj="homePanel" data-label="歡迎彈窗">
+        <h2 class="home__welcome">歡迎</h2>
+        <p class="home__lead" id="login-lead">
+          歡迎使用雲端宅邸管理系統<br>請輸入住戶名稱進行登入
+        </p>
+        <label class="home__field">
+          <span class="sr-only">住戶名稱</span>
+          <input id="login-name" type="text" placeholder="請輸入名稱" maxlength="20" autocomplete="off" spellcheck="false">
+        </label>
+        <button class="home__submit" id="login-submit" type="submit">登入</button>
+      </form>
+
+      <footer class="home__foot">
+        <ul class="home__acts">
+          <li>
+            <button class="home__act chamfer" type="button" data-obj="homeAct1" data-label="功能鍵 立即警報">
+              <span class="home__act-ico">
+                <svg viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0-6 6c0 3-1 5-2 6h16c-1-1-2-3-2-6a6 6 0 0 0-6-6Z"/><path d="M10 19a2 2 0 0 0 4 0"/><path d="M12 3V1.5"/></svg>
+              </span>
+              <b>立即警報</b>
+            </button>
+          </li>
+          <li>
+            <button class="home__act chamfer" type="button" data-obj="homeAct2" data-label="功能鍵 逃生路線">
+              <span class="home__act-ico">
+                <svg viewBox="0 0 24 24"><circle cx="14" cy="4.2" r="2"/><path d="M13 8.5 9.5 11l1.8 3.2L9 21"/><path d="M13 8.5 17 10l2.5 3"/><path d="M11.3 14.2 6 13"/></svg>
+              </span>
+              <b>逃生路線</b>
+            </button>
+          </li>
+          <li>
+            <button class="home__act chamfer" type="button" data-obj="homeAct3" data-label="功能鍵 安全法規">
+              <span class="home__act-ico">
+                <svg viewBox="0 0 24 24"><path d="M12 2.8 20 6v5.6c0 4.6-3.2 7.9-8 9.6-4.8-1.7-8-5-8-9.6V6l8-3.2Z"/><path d="m8.6 12 2.4 2.4 4.4-4.6"/></svg>
+              </span>
+              <b>安全法規</b>
+            </button>
+          </li>
+        </ul>
+
+        <div class="home__guide">
+          <p class="home__guide-title" data-obj="homeGuideTitle" data-label="大樓名稱"><span class="home__guide-name">[新大樓名稱]</span> 智慧安全指南</p>
+          <p class="home__guide-slogan chamfer" data-obj="homeGuideSlogan" data-label="標語"><span>每一秒都關鍵，安全逃生，守護生命！</span></p>
+        </div>
+      </footer>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       PAGE 3 — 綠色介面 (0)
+       ============================================================ -->
+  <section class="page page--blank page--green" data-page="green">
+    <div class="blank">
+      <span class="blank__key">0</span>
+      <h2 class="blank__zh">綠色介面</h2>
+      <p class="blank__en">GREEN MODE</p>
+      <p class="blank__note">待製作 · CONTENT PENDING</p>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       PAGE 4 — 紅色介面 (1)
+       ============================================================ -->
+  <section class="page page--blank page--red" data-page="red">
+    <div class="blank">
+      <span class="blank__key">1</span>
+      <h2 class="blank__zh">紅色介面</h2>
+      <p class="blank__en">RED MODE</p>
+      <p class="blank__note">待製作 · CONTENT PENDING</p>
+    </div>
+  </section>
+
+
+</div>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>

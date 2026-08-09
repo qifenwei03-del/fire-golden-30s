@@ -1,0 +1,727 @@
+/* =========================================================
+   火災黃金30秒 — THE GOLDEN 30 SECONDS
+   設計基準 1920 × 1080，以 rem 隨視窗等比縮放
+
+   主色調切換：<html data-theme="blue">（預設）或 "green"
+   也可在 console 執行 __setTheme('green') 即時比較
+   ========================================================= */
+
+/* ---------- 藍色主題（預設） ---------- */
+:root,
+:root[data-theme="blue"]{
+  --bg-0:#020912;
+  --bg-1:#061527;
+  --bg-2:#0a2038;
+
+  --brand:#2f9dff;
+  --brand-hi:#74d4ff;
+  --brand-line:rgba(47,157,255,.22);
+  --brand-soft:rgba(47,157,255,.13);
+
+  --glow-1:rgba(24,96,190,.32);
+  --glow-2:rgba(16,68,140,.24);
+
+  --ink:#eaf6ff;
+  --ink-2:rgba(213,238,255,.66);
+  --ink-3:rgba(178,213,245,.38);
+
+
+  /* 3D 場景（viewer.js 讀取同一組值） */
+  --m-fog:#031020;
+  --m-floor:#0a1c30;
+  --m-slab:#e4efff;      /* 首頁大樓的樓板：偏藍的白 */
+  --m-wall:#123049;
+  --m-edge:#74d4ff;
+  --m-grid:#2f9dff;
+  --m-grid-2:#1c4a6b;
+}
+
+/* ---------- 綠色主題（原稿） ---------- */
+:root[data-theme="green"]{
+  --bg-0:#020d08;
+  --bg-1:#06190f;
+  --bg-2:#0a2415;
+
+  --brand:#2fe27f;
+  --brand-hi:#63ffae;
+  --brand-line:rgba(47,226,127,.20);
+  --brand-soft:rgba(47,226,127,.13);
+
+  --glow-1:rgba(24,120,72,.30);
+  --glow-2:rgba(18,92,56,.22);
+
+  --ink:#eafff4;
+  --ink-2:rgba(213,255,231,.66);
+  --ink-3:rgba(180,238,210,.36);
+
+
+  --m-fog:#03130c;
+  --m-floor:#0a2417;
+  --m-slab:#e2fff0;
+  --m-wall:#123d28;
+  --m-edge:#3dffa0;
+  --m-grid:#2fe27f;
+  --m-grid-2:#1c6b45;
+}
+
+/* ---------- 語意色（不隨主題變動） ---------- */
+:root{
+  --amber:#ffb42e;     /* 警語 */
+  --red:#ff4a3d;       /* 起火點 */
+  --exit:#3dffa0;      /* 安全出口：沿用國際通用的綠色 */
+  --ease:cubic-bezier(.22,.61,.36,1);
+
+  /* 三個時段的代表色，倒數圓盤和右側階段卡共用同一組 */
+  --stage-0:var(--brand-hi);   /* 0-10 秒（剩 30-21）：藍，跟著主色走 */
+  --stage-1:#ffb42e;           /* 10-20 秒（剩 20-11）：黃 */
+  --stage-2:#ff4a3d;           /* 20-30 秒（剩 10-0）：紅 */
+}
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+/* =========================================================
+   面板：內部不填色，只有一圈漸層細框（倒角八邊形）
+   ---------------------------------------------------------
+   clip-path 用 evenodd 一次畫出「外框 + 內孔」，中間鏤空，
+   於是元素的 background（漸層）只剩下 --bw 粗的一圈框線。
+   --ci 是內孔的倒角起點：斜邊要往內縮 bw/tan(67.5°) ≈ .5858bw
+   才能讓斜邊和直邊一樣粗。
+   ========================================================= */
+.chamfer{
+  --ch:.62rem;                                   /* 倒角大小 */
+  --bw:.5px;                                     /* 框線粗細 */
+  --ci:calc(var(--ch) + var(--bw) * .5858);
+  --glass:none;                                  /* 內部底色，預設不填 */
+  /* 線細成一半後會被抗鋸齒吃掉約 50% 的濃度，所以透明度要相應調高，
+     最暗的那一段也要留夠，否則右下角會淡到看不見、看起來像缺一條邊 */
+  --stroke:linear-gradient(140deg,
+    color-mix(in srgb, var(--brand-hi) 100%, transparent) 0%,
+    color-mix(in srgb, var(--brand) 72%, transparent) 30%,
+    color-mix(in srgb, var(--brand) 40%, transparent) 64%,
+    color-mix(in srgb, var(--brand) 70%, transparent) 100%);
+
+  /* 實心八邊形，給玻璃層用 */
+  --shape:polygon(
+    var(--ch) 0, calc(100% - var(--ch)) 0,
+    100% var(--ch), 100% calc(100% - var(--ch)),
+    calc(100% - var(--ch)) 100%, var(--ch) 100%,
+    0 calc(100% - var(--ch)), 0 var(--ch));
+
+  /* 外框一圈 + 內孔，evenodd 讓中間鏤空。
+     兩圈都要各自「回到起點」才算閉合：外圈最後補一次 A、內圈最後補一次 P，
+     中間那段 A→P 和收尾的 P→A 完全重疊會互相抵銷，不影響填色。
+     少了這兩個補點，外圈左緣會被當成連接段跳過 → 框線缺左邊那一條。 */
+  --ring:polygon(evenodd,
+    /* 外圈 */
+    0 var(--ch),                                    /* A */
+    var(--ch) 0,
+    calc(100% - var(--ch)) 0,
+    100% var(--ch),
+    100% calc(100% - var(--ch)),
+    calc(100% - var(--ch)) 100%,
+    var(--ch) 100%,
+    0 calc(100% - var(--ch)),
+    0 var(--ch),                                    /* A：閉合外圈 */
+    /* 內圈 */
+    var(--bw) var(--ci),                            /* P */
+    var(--ci) var(--bw),
+    calc(100% - var(--ci)) var(--bw),
+    calc(100% - var(--bw)) var(--ci),
+    calc(100% - var(--bw)) calc(100% - var(--ci)),
+    calc(100% - var(--ci)) calc(100% - var(--bw)),
+    var(--ci) calc(100% - var(--bw)),
+    var(--bw) calc(100% - var(--ci)),
+    var(--bw) var(--ci));                           /* P：閉合內圈 */
+
+  position:relative;border:0;border-radius:0;background:none;
+}
+/* clip-path 會連子元素一起裁掉，所以底色和框線都畫在偽元素上：
+   ::before 是底層玻璃，::after 是上層框線，內容再靠 z-index 浮在最上面 */
+.chamfer::before{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:var(--glass);
+  clip-path:var(--shape);
+}
+.chamfer::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:var(--stroke);
+  clip-path:var(--ring);
+}
+.chamfer > *{position:relative;z-index:1}
+
+html{
+  /* 1920×1080 時 = 16px；其他尺寸取寬高較小者等比縮放 */
+  font-size:max(8px, min(.8333vw, 1.4814vh));
+  /* 全螢幕看板：不能出現捲軸，否則捲軸會改變 vw/vh 進而改變 rem */
+  overflow:hidden;
+}
+
+/* =========================================================
+   載入中：整片深藍蓋住，等自訂版面套用完才顯示
+   （class 直接寫在 <html> 上，第一次繪製前就生效）
+   ========================================================= */
+html.is-booting{background:var(--bg-0)}
+/* 用 opacity 不用 visibility：visibility 會被子層的 .page.is-active{visibility:visible} 蓋回來。
+   opacity 是整個子樹一起合成，蓋得住；版面照樣算得出來，編輯器量尺寸不受影響。 */
+html.is-booting body{opacity:0;pointer-events:none}
+html.is-booting::after{
+  content:"載入中";
+  position:fixed;inset:0;display:grid;place-items:center;
+  font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  font-size:.8rem;letter-spacing:.5em;text-indent:.5em;
+  color:var(--ink-3);
+  opacity:0;animation:bootHint .5s ease-out .7s forwards;   /* 秒開時不會閃字 */
+}
+@keyframes bootHint{to{opacity:1}}
+
+body{
+  height:100vh;
+  overflow:hidden;
+  background:var(--bg-0);
+  color:var(--ink);
+  font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  cursor:default;
+}
+
+svg{display:block}
+
+/* ---------- 頁面容器 ---------- */
+.app{position:relative;width:100vw;height:100vh;overflow:hidden}
+
+.page{
+  position:absolute;inset:0;
+  opacity:0;visibility:hidden;
+  transform:scale(.985);
+  transition:opacity .42s var(--ease), transform .42s var(--ease), visibility .42s;
+}
+.page.is-active{opacity:1;visibility:visible;transform:none}
+
+.page--main{
+  display:flex;flex-direction:column;
+  padding:2.2rem 2.6rem 1.1rem;
+  background:
+    radial-gradient(120% 90% at 50% -10%, var(--glow-1), transparent 60%),
+    radial-gradient(80% 70% at 50% 55%, var(--glow-2), transparent 70%),
+    linear-gradient(170deg, var(--bg-1) 0%, var(--bg-0) 65%);
+}
+
+/* 細微掃描線 */
+.grain{
+  position:absolute;inset:0;pointer-events:none;z-index:5;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px);
+  mix-blend-mode:multiply;opacity:.5;
+}
+
+/* ---------- 主格線 ---------- */
+.layout{
+  position:relative;z-index:2;
+  flex:1;min-height:0;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 25rem;
+  grid-template-rows:minmax(0,1fr) auto;
+  grid-template-areas:
+    "main side"
+    "acts acts";      /* 四格那排橫跨整個版面，才會對到畫面正中 */
+  gap:1.4rem 2.2rem;
+}
+.col-main{grid-area:main;display:flex;flex-direction:column;min-width:0;min-height:0;gap:1.4rem}
+.col-side{grid-area:side;display:flex;flex-direction:column;min-height:0;gap:1.1rem}
+
+/* =========================================================
+   標題
+   ========================================================= */
+.hero{flex:none}
+.hero__zh{
+  font-size:3.5rem;font-weight:700;line-height:1;letter-spacing:.02em;
+  display:flex;align-items:baseline;gap:.1em;
+  text-shadow:0 0 2.4rem var(--brand-soft);
+}
+.hero__num{
+  font-family:"Oswald",sans-serif;font-style:normal;font-weight:600;
+  font-size:1.62em;line-height:.8;letter-spacing:-.01em;
+  color:var(--brand-hi);
+  margin:0 .06em;
+  text-shadow:0 0 2rem color-mix(in srgb, var(--brand) 55%, transparent);
+}
+.hero__en{
+  margin-top:.55rem;
+  font-family:"Oswald",sans-serif;font-weight:400;
+  font-size:1.35rem;letter-spacing:.30em;color:var(--ink-2);
+}
+.hero__tag{
+  margin-top:.85rem;
+  display:flex;align-items:center;gap:.55rem;
+  font-size:1.06rem;font-weight:500;letter-spacing:.14em;color:var(--ink-2);
+}
+.tick{
+  width:.34rem;height:1.05rem;flex:none;border-radius:.2rem;
+  background:var(--brand);
+  box-shadow:0 0 .8rem color-mix(in srgb, var(--brand) 70%, transparent);
+}
+
+/* =========================================================
+   中段：模型舞台 + 倒數
+   ========================================================= */
+.mid{
+  flex:1;min-height:0;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 27rem;
+  gap:2rem;align-items:stretch;
+}
+
+/* ---------- 3D 舞台（無外框，直接融進背景） ---------- */
+.stage{position:relative;overflow:hidden}
+.stage canvas{display:block;width:100%!important;height:100%!important}
+.stage.is-drop{box-shadow:inset 0 0 0 1px var(--brand-hi),inset 0 0 5rem var(--brand-soft)}
+
+.stage__label{
+  position:absolute;top:.85rem;left:1rem;z-index:3;pointer-events:none;
+  font-family:"Oswald",sans-serif;font-size:.72rem;letter-spacing:.24em;
+  color:var(--ink-3);
+}
+.stage__hint{
+  position:absolute;bottom:.85rem;right:1rem;z-index:3;pointer-events:none;
+  font-size:.72rem;letter-spacing:.06em;color:var(--ink-3);text-align:right;
+  transition:opacity .3s;
+}
+.stage__hint b{color:var(--ink-2);font-weight:500}
+.stage__loading{
+  position:absolute;inset:auto 0 50% 0;z-index:4;text-align:center;
+  font-family:"Oswald",sans-serif;letter-spacing:.2em;font-size:.9rem;color:var(--brand-hi);
+}
+.legend{
+  position:absolute;left:1rem;bottom:.85rem;z-index:3;list-style:none;pointer-events:none;
+  display:flex;flex-direction:column;gap:.4rem;align-items:flex-start;
+}
+.legend li{display:flex;align-items:center;gap:.45rem;font-size:.72rem;color:var(--ink-3);letter-spacing:.08em}
+.dot{width:.45rem;height:.45rem;border-radius:50%}
+.dot--red{background:var(--red);box-shadow:0 0 .7rem var(--red)}
+.dot--green{background:var(--exit);box-shadow:0 0 .7rem var(--exit)}
+
+/* ---------- 倒數面板 ---------- */
+/* data-stage 由 countdown.js 跟著剩餘秒數切換，整組圓盤共用這個 --hot */
+.timer{
+  --hot:var(--stage-0);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1.1rem;min-height:0;
+}
+.timer[data-stage="1"]{--hot:var(--stage-1)}
+.timer[data-stage="2"]{--hot:var(--stage-2)}
+.timer__ring{position:relative;width:100%;max-width:25rem;aspect-ratio:1;cursor:pointer}
+
+.ring{width:100%;height:100%;overflow:visible}
+.ring__track{fill:none;stroke:var(--brand-soft);stroke-width:1}
+.ring__track--in{stroke:var(--brand-soft);opacity:.6}
+.ring__ticks line{
+  stroke:var(--brand-soft);stroke-width:6;stroke-linecap:round;
+  transition:stroke .18s linear;
+}
+.ring__ticks line.on{stroke:var(--hot)}
+.ring__head{
+  fill:var(--hot);filter:drop-shadow(0 0 .5rem var(--hot));
+  transition:fill .3s var(--ease);
+}
+
+/* ---------- 內圈的彗星尾光帶（一秒一圈） ---------- */
+.comet{
+  --r:.34rem;                      /* 光帶粗細 */
+  position:absolute;left:50%;top:50%;
+  width:59%;aspect-ratio:1;        /* 對齊 viewBox 裡 r=118 的內圈 */
+  transform:translate(-50%,-50%);
+  pointer-events:none;
+  /* 光暈打在外層，才會套在「已經遮罩過」的環上而不是整個圓盤 */
+  filter:drop-shadow(0 0 .42rem color-mix(in srgb, var(--hot) 75%, transparent));
+  transition:filter .3s var(--ease);
+}
+.comet i{
+  position:absolute;inset:0;border-radius:50%;
+  /* 逆時針跑，所以頭放在 0°（正上方）、尾巴往順時針方向拖，頭才會在前面 */
+  background:conic-gradient(from -90deg,
+    #fff 0deg,
+    var(--hot) 7deg,
+    color-mix(in srgb, var(--hot) 85%, transparent) 22deg,
+    color-mix(in srgb, var(--hot) 50%, transparent) 62deg,
+    color-mix(in srgb, var(--hot) 20%, transparent) 122deg,
+    transparent 190deg,
+    transparent 360deg);
+  /* 只留最外緣一圈，中間挖空 */
+  -webkit-mask:radial-gradient(closest-side, #0000 calc(100% - var(--r)), #000 calc(100% - var(--r)));
+  mask:radial-gradient(closest-side, #0000 calc(100% - var(--r)), #000 calc(100% - var(--r)));
+  animation:cometSpin 2s linear infinite;
+}
+@keyframes cometSpin{ from{rotate:0deg} to{rotate:-360deg} }   /* 負角度＝逆時針 */
+
+@media (prefers-reduced-motion:reduce){ .comet i{animation:none} }
+
+.timer__center{
+  position:absolute;inset:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.4rem;
+  pointer-events:none;
+}
+.timer__value{
+  display:flex;align-items:baseline;
+  font-family:"Oswald",sans-serif;font-weight:500;
+  font-size:8.4rem;line-height:.82;color:var(--hot);
+  text-shadow:0 0 3.4rem color-mix(in srgb, var(--hot) 60%, transparent);
+  transition:color .3s var(--ease), text-shadow .3s var(--ease);
+}
+/* 最後 5 秒（.is-urgent 由 countdown.js 掛上） */
+.timer.is-urgent .timer__value{animation:urgentBlink 1s ease-in-out infinite}
+@keyframes urgentBlink{
+  0%,100%{opacity:1;text-shadow:0 0 3.4rem color-mix(in srgb, var(--hot) 60%, transparent)}
+  50%{opacity:.22;text-shadow:0 0 1rem color-mix(in srgb, var(--hot) 25%, transparent)}
+}
+@media (prefers-reduced-motion:reduce){ .timer.is-urgent .timer__value{animation:none} }
+.timer__value i{
+  font-style:normal;font-family:"Noto Sans TC",sans-serif;font-size:.24em;font-weight:700;
+  margin-left:.12em;color:var(--hot);transition:color .3s var(--ease);
+}
+.timer__caption{
+  font-size:.92rem;letter-spacing:.34em;color:var(--hot);padding-left:.34em;
+  transition:color .3s var(--ease);
+}
+.timer__foot{font-size:1.02rem;font-weight:500;letter-spacing:.1em;color:var(--ink-2)}
+.timer__foot b{
+  color:var(--hot);font-family:"Oswald",sans-serif;font-weight:500;font-size:1.16em;
+  transition:color .3s var(--ease);
+}
+
+/* =========================================================
+   正確應對
+   ========================================================= */
+.acts{grid-area:acts;display:flex;flex-direction:column;gap:.8rem}
+.acts__title{
+  display:flex;align-items:center;gap:.55rem;
+  font-size:1.12rem;font-weight:600;letter-spacing:.12em;color:var(--ink);
+}
+/* 四格置中成一排，不再撐滿整欄 */
+.acts__list{
+  list-style:none;display:grid;grid-template-columns:repeat(4,15rem);
+  gap:.9rem;justify-content:center;
+}
+.act{
+  --ch:.5rem;
+  display:flex;flex-direction:column;align-items:center;gap:.3rem;
+  padding:1.15rem .6rem 1rem;
+}
+.act:hover{--bw:.75px}
+.act__ico{width:3.1rem;height:3.1rem;margin-bottom:.35rem;color:var(--brand-hi)}
+.act__ico svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.25;stroke-linecap:round;stroke-linejoin:round}
+.act b{font-size:.9rem;font-weight:700;letter-spacing:.1em}
+.act__sub{font-size:.7rem;color:var(--ink-3);letter-spacing:.04em}
+
+/* =========================================================
+   右欄
+   ========================================================= */
+.side-head{flex:none;text-align:right;padding-top:.4rem}
+.side-head h2{
+  font-size:1.62rem;font-weight:700;letter-spacing:.06em;color:var(--brand-hi);
+  text-shadow:0 0 1.6rem color-mix(in srgb, var(--brand) 40%, transparent);
+}
+.side-head p{margin-top:.5rem;font-size:.8rem;line-height:1.6;color:var(--ink-3);letter-spacing:.06em}
+
+.phases{list-style:none;flex:1;min-height:0;display:flex;flex-direction:column;gap:1.1rem;justify-content:center}
+.phase{
+  --ch:.7rem;
+  --bw:.5px;
+  /* 細框 + 薄玻璃：一層很淡的高光漸層再加背景模糊 */
+  --glass:linear-gradient(155deg,
+    rgba(255,255,255,.065) 0%, rgba(255,255,255,.012) 48%, rgba(255,255,255,.038) 100%);
+  --stroke:linear-gradient(140deg,
+    color-mix(in srgb, var(--brand-hi) 95%, transparent) 0%,
+    color-mix(in srgb, var(--brand) 62%, transparent) 34%,
+    color-mix(in srgb, var(--brand) 36%, transparent) 66%,
+    color-mix(in srgb, var(--brand) 62%, transparent) 100%);
+
+  display:flex;align-items:center;gap:1rem;
+  padding:1.15rem 1.1rem;
+  /* 用 translate 而非 transform，才不會和編輯模式的 scale() 打架 */
+  transition:translate .3s var(--ease);
+}
+.phase::before{backdrop-filter:blur(7px)}
+.phase::after{transition:filter .3s var(--ease)}
+
+/* 每一段的專屬亮色 */
+.phase[data-phase="0"]{--hot:var(--stage-0)}
+.phase[data-phase="1"]{--hot:var(--stage-1)}
+.phase[data-phase="2"]{--hot:var(--stage-2)}
+.phase__ico{
+  flex:none;width:3.2rem;height:3.2rem;border-radius:50%;
+  display:grid;place-items:center;
+  border:1px solid color-mix(in srgb, var(--brand) 34%, transparent);
+  background:rgba(0,0,0,.35);
+  color:var(--brand);
+  transition:color .3s, border-color .3s, box-shadow .3s, background .3s;
+}
+.phase__ico svg{width:1.7rem;height:1.7rem;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.phase__body{min-width:0}
+.phase__t{
+  display:block;font-family:"Oswald",sans-serif;font-weight:500;
+  font-size:1.55rem;line-height:1;color:var(--brand-hi);letter-spacing:.02em;
+  transition:color .3s var(--ease), text-shadow .3s var(--ease);
+}
+.phase__t i{font-style:normal;font-family:"Noto Sans TC",sans-serif;font-size:.58em;font-weight:700;margin-left:.18em}
+.phase__d{
+  margin-top:.45rem;font-size:.78rem;line-height:1.55;color:var(--ink-3);letter-spacing:.03em;
+  transition:color .3s var(--ease);
+}
+
+/* 輪到這一段：框線換成該段的亮色並微微加粗，圓形 Icon 同步亮起 */
+.phase.is-on{
+  --bw:.75px;
+  --stroke:linear-gradient(140deg,
+    var(--hot) 0%, color-mix(in srgb, var(--hot) 52%, transparent) 48%, var(--hot) 100%);
+  --glass:linear-gradient(155deg,
+    color-mix(in srgb, var(--hot) 10%, rgba(255,255,255,.055)) 0%,
+    rgba(255,255,255,.018) 50%,
+    color-mix(in srgb, var(--hot) 7%, rgba(255,255,255,.03)) 100%);
+  translate:-.35rem 0;
+}
+/* 光暈直接打在框線那層，只有框會發光 */
+.phase.is-on::after{
+  filter:drop-shadow(0 0 .45rem color-mix(in srgb, var(--hot) 55%, transparent));
+}
+.phase.is-on .phase__ico{
+  color:var(--hot);
+  border-color:var(--hot);
+  background:color-mix(in srgb, var(--hot) 14%, rgba(0,0,0,.4));
+  box-shadow:0 0 .9rem color-mix(in srgb, var(--hot) 45%, transparent),
+             inset 0 0 .7rem color-mix(in srgb, var(--hot) 20%, transparent);
+}
+/* 文字也跟著換色：標題整個變該段的顏色，說明文字混一點色調並提亮 */
+.phase.is-on .phase__t{
+  color:var(--hot);
+  text-shadow:0 0 1rem color-mix(in srgb, var(--hot) 40%, transparent);
+}
+.phase.is-on .phase__d{color:color-mix(in srgb, var(--hot) 42%, var(--ink))}
+
+/* =========================================================
+   底部警語
+   ========================================================= */
+.warn{
+  --ch:.5rem;
+  --stroke:linear-gradient(90deg,
+    rgba(255,180,46,.12) 0%, rgba(255,180,46,.7) 50%, rgba(255,180,46,.12) 100%);
+  z-index:2;flex:none;margin-top:1.1rem;
+  display:flex;align-items:center;justify-content:center;gap:.7rem;
+  padding:.62rem 1rem;
+  font-size:.92rem;font-weight:500;letter-spacing:.2em;color:var(--amber);
+}
+.warn__ico{width:1.15rem;height:1.15rem}
+.warn__ico svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linejoin:round;stroke-linecap:round}
+
+/* =========================================================
+   首頁（ENTER）
+   ========================================================= */
+.page--home{
+  display:flex;flex-direction:column;
+  /* 下方留白跟 .page--main 一樣，右下標語才會和第一頁的「火災無情」同高 */
+  padding:2.4rem 2.8rem 1.1rem;
+  background:
+    radial-gradient(120% 90% at 50% -10%, var(--glow-1), transparent 60%),
+    radial-gradient(80% 70% at 40% 55%, var(--glow-2), transparent 70%),
+    linear-gradient(170deg, var(--bg-1) 0%, var(--bg-0) 65%);
+}
+
+.home{
+  position:relative;z-index:2;
+  flex:1;min-height:0;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 27rem;
+  grid-template-rows:auto minmax(0,1fr) auto;
+  grid-template-areas:
+    "brand brand"
+    "stage panel"
+    "foot  foot";
+  gap:1.4rem 2.6rem;
+}
+
+/* ---------- 標題 ---------- */
+.home__brand{grid-area:brand;display:flex;align-items:center;gap:1rem}
+.home__mark{width:3.6rem;height:3.6rem;flex:none;color:var(--brand-hi)}
+.home__mark svg{
+  width:100%;height:100%;fill:none;stroke:currentColor;
+  stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round;
+  filter:drop-shadow(0 0 .7rem color-mix(in srgb, var(--brand) 45%, transparent));
+}
+/* 字級跟第一頁的 .hero__zh 對齊 */
+.home__name{
+  font-size:3.5rem;font-weight:700;letter-spacing:.06em;line-height:1;
+  text-shadow:0 0 2.4rem var(--brand-soft);
+}
+
+/* ---------- 3D 區 ---------- */
+.home__stage{grid-area:stage;min-width:0;min-height:0}
+
+/* ---------- 歡迎面板 ---------- */
+.home__panel{
+  --ch:.8rem;
+  --bw:.85px;
+  --glass:linear-gradient(155deg,
+    rgba(255,255,255,.08) 0%, rgba(255,255,255,.018) 48%, rgba(255,255,255,.045) 100%);
+  grid-area:panel;align-self:center;
+  display:flex;flex-direction:column;
+  padding:2.2rem 1.9rem;
+  /* 讓彈窗浮起來，陰影會跟著倒角外形 */
+  filter:drop-shadow(0 .5rem 1.5rem rgba(0,0,0,.6));
+}
+.home__panel::before{backdrop-filter:blur(9px)}
+
+/* 框線發光：和第一頁階段卡亮起時同一套做法——細框 + 亮色漸層 + 框線層打光暈 */
+.home__panel{
+  --stroke:linear-gradient(140deg,
+    var(--brand-hi) 0%,
+    color-mix(in srgb, var(--brand-hi) 52%, transparent) 48%,
+    var(--brand-hi) 100%);
+}
+.home__panel::after{
+  filter:drop-shadow(0 0 .45rem color-mix(in srgb, var(--brand-hi) 55%, transparent));
+}
+
+.home__welcome{
+  font-size:1.8rem;font-weight:700;letter-spacing:.24em;text-align:center;
+  color:var(--ink);
+  padding-left:.24em;                       /* 補掉字距在尾端多出來的空白，視覺才置中 */
+  animation:welcomeBreath 3.4s ease-in-out infinite;
+}
+/* 藍色呼吸底光 */
+@keyframes welcomeBreath{
+  0%,100%{
+    text-shadow:0 0 .9rem color-mix(in srgb, var(--brand) 26%, transparent);
+  }
+  50%{
+    text-shadow:0 0 1.1rem color-mix(in srgb, var(--brand-hi) 55%, transparent),
+                0 0 2.8rem color-mix(in srgb, var(--brand) 62%, transparent);
+  }
+}
+@media (prefers-reduced-motion:reduce){
+  .home__welcome{animation:none;text-shadow:0 0 1.6rem var(--brand-soft)}
+}
+.home__lead{
+  margin-top:1.1rem;
+  font-size:.86rem;line-height:2;letter-spacing:.06em;text-align:center;color:var(--ink-2);
+}
+.home__lead b{color:var(--brand-hi);font-weight:700}
+
+.home__field{display:block;margin-top:1.6rem}
+.home__field input{
+  width:100%;padding:.72rem .9rem;
+  background:rgba(255,255,255,.05);
+  border:1px solid var(--brand-line);border-radius:0;
+  color:var(--ink);font-family:inherit;font-size:.92rem;letter-spacing:.08em;
+  transition:border-color .2s var(--ease), background .2s var(--ease);
+}
+.home__field input::placeholder{color:var(--ink-3);letter-spacing:.1em}
+.home__field input:focus{
+  outline:none;background:rgba(255,255,255,.09);
+  border-color:var(--brand-hi);
+  box-shadow:0 0 .9rem color-mix(in srgb, var(--brand) 30%, transparent);
+}
+
+.home__submit{
+  margin-top:.9rem;padding:.72rem;cursor:pointer;
+  border:1px solid color-mix(in srgb, var(--brand-hi) 60%, transparent);border-radius:0;
+  background:color-mix(in srgb, var(--brand) 42%, transparent);
+  color:var(--ink);font-family:inherit;font-size:1rem;font-weight:700;letter-spacing:.32em;
+  padding-left:calc(.72rem + .32em);
+  transition:background .2s var(--ease), border-color .2s var(--ease);
+}
+.home__submit:hover{
+  background:color-mix(in srgb, var(--brand) 62%, transparent);
+  border-color:var(--brand-hi);
+}
+.home__submit:active{background:color-mix(in srgb, var(--brand) 75%, transparent)}
+
+/* 沒填名稱時抖一下 */
+.home__panel.is-empty .home__field input{border-color:var(--red)}
+.home__panel.is-empty{animation:homeShake .3s var(--ease)}
+@keyframes homeShake{
+  0%,100%{translate:0 0}
+  25%{translate:-.4rem 0}
+  75%{translate:.4rem 0}
+}
+@media (prefers-reduced-motion:reduce){ .home__panel.is-empty{animation:none} }
+
+/* ---------- 底部：左邊三個功能鍵、右邊大樓標語 ---------- */
+.home__foot{
+  grid-area:foot;
+  display:flex;align-items:flex-end;justify-content:space-between;gap:2rem;
+}
+
+/* 尺寸跟第一頁「正確應對」那排的 .act 對齊 */
+.home__acts{list-style:none;display:flex;gap:.9rem}
+.home__act{
+  --ch:.5rem;
+  width:15rem;padding:1.15rem .6rem 1rem;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.3rem;
+  min-height:8.5rem;                 /* 沒有第二行說明字，補高度才跟 .act 一樣大 */
+  cursor:pointer;font-family:inherit;color:var(--ink);
+  transition:color .2s var(--ease);
+}
+.home__act:hover{--bw:1.2px;color:var(--brand-hi)}
+.home__act:focus-visible{outline:2px solid var(--brand-hi);outline-offset:2px}
+.home__act-ico{width:3.1rem;height:3.1rem;margin-bottom:.35rem;color:var(--brand-hi)}
+.home__act-ico svg{
+  width:100%;height:100%;fill:none;stroke:currentColor;
+  stroke-width:1.25;stroke-linecap:round;stroke-linejoin:round;
+}
+.home__act b{font-size:.9rem;font-weight:700;letter-spacing:.1em}
+
+/* 大樓名稱和標語條互相置中，不是靠右對齊 */
+.home__guide{display:flex;flex-direction:column;align-items:center;gap:.7rem;text-align:center}
+.home__guide-title{
+  font-size:1.5rem;font-weight:700;letter-spacing:.06em;color:var(--ink);
+  text-shadow:0 0 1.6rem var(--brand-soft);
+  padding-left:.06em;                       /* 同樣補字距 */
+}
+.home__guide-name{color:var(--brand-hi)}
+/* 尺寸跟第一頁底部警語 .warn 對齊 */
+.home__guide-slogan{
+  --ch:.5rem;
+  --glass:linear-gradient(100deg,
+    color-mix(in srgb, var(--brand) 16%, transparent) 0%,
+    color-mix(in srgb, var(--brand) 6%, transparent) 100%);
+  padding:.62rem 1rem;
+  font-size:.92rem;font-weight:500;letter-spacing:.2em;color:var(--brand-hi);
+  /* 字距會在最後一個字後面多留一格，補回來文字才真的置中 */
+  text-align:center;padding-left:calc(1rem + .2em);
+}
+
+/* 只給螢幕報讀，不顯示 */
+.sr-only{
+  position:absolute;width:1px;height:1px;padding:0;margin:-1px;
+  overflow:hidden;clip-path:inset(50%);white-space:nowrap;
+}
+
+/* =========================================================
+   空白頁
+   ========================================================= */
+.page--blank{display:grid;place-items:center}
+.page--green{background:radial-gradient(70% 60% at 50% 45%,#0b5a35,#01140b 78%)}
+.page--red{background:radial-gradient(70% 60% at 50% 45%,#5c130d,#140302 78%)}
+
+.blank{text-align:center;display:flex;flex-direction:column;align-items:center;gap:.5rem}
+.blank__key{
+  font-family:"Oswald",sans-serif;font-size:.82rem;letter-spacing:.26em;
+  padding:.42rem 1.1rem;margin-bottom:1rem;border-radius:2rem;
+  border:1px solid currentColor;opacity:.65;
+}
+.blank__zh{font-size:3.6rem;font-weight:700;letter-spacing:.12em;line-height:1.1}
+.blank__en{font-family:"Oswald",sans-serif;font-size:1.1rem;letter-spacing:.42em;opacity:.6}
+.blank__note{margin-top:1.4rem;font-size:.76rem;letter-spacing:.28em;opacity:.34}
+
+.page--green .blank{color:#d9ffe9}
+.page--red .blank{color:#ffd9d4}
+
+/* =========================================================
+   窄螢幕 / 直式 — 保持不橫向捲動
+   ========================================================= */
+@media (max-aspect-ratio: 5/4){
+  .layout{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) auto}
+  .col-side{flex-direction:row;align-items:stretch;gap:.9rem}
+  .side-head{text-align:left;flex:none;align-self:center;max-width:11rem}
+  .phases{flex-direction:row;flex:1}
+  .phase{flex:1}
+  .mid{grid-template-columns:1fr}
+  .stage{display:none}
+}
