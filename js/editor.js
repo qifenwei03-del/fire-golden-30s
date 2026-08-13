@@ -576,8 +576,12 @@ export function createEditor({
       <span class="eo-bar__group">${DIST_BTNS.map(ico).join('')}</span>
       <span class="eo-bar__group">${PAGE_BTNS.map(ico).join('')}</span>
       <span class="eo-bar__sep"></span>
-      ${viewer ? `<button data-a="viewEdit" title="開啟後可以直接拖曳 3D 畫面調角度、滾輪縮放；放開就記住">調整模型</button>
-      <button data-a="viewSpin" title="模型要不要自己慢慢轉">自動旋轉</button>
+      ${viewer ? `<button data-a="viewEdit" title="開啟後：左鍵拖曳轉角度、右鍵拖曳平移、滾輪縮放；放開就記住">調整模型</button>
+      <button data-a="viewPivot" title="開啟後拖曳畫面平移「旋轉軸心」（黃色軸線），放開就記住">調整軸心</button>
+      <button data-a="viewSpin" title="模型要不要自己慢慢轉整圈">自動旋轉</button>
+      <button data-a="viewSwing" title="開啟後模型在目前角度 ± 擺幅之間來回擺動，不轉整圈">來回擺動</button>
+      <label class="eo-bar__speed" title="自動旋轉速度（往左為反向、中間為停）；擺動時是快慢">速度<input data-f="spin" type="range" min="-2" max="2" step="0.05" style="width:70px;vertical-align:middle" disabled></label>
+      <label class="eo-bar__speed" title="來回擺動的幅度（左右各幾度）">擺幅<input data-f="swingAmp" type="range" min="5" max="90" step="1" style="width:70px;vertical-align:middle" disabled></label>
       <button data-a="viewReset" title="視角回到預設">重設視角</button>
       <span class="eo-bar__sep"></span>` : ''}
       <button data-a="hide">隱藏</button>
@@ -605,6 +609,26 @@ export function createEditor({
       });
     }
 
+    // 旋轉速度滑桿：拖動即時套用，放開才存檔（避免每格都寫一次檔）
+    if (viewer && fields.spin) {
+      fields.spin.disabled = false;
+      fields.spin.addEventListener('input', () => viewer.setAutoRotateSpeed(parseFloat(fields.spin.value)));
+      fields.spin.addEventListener('change', () => {
+        rememberView();
+        say(`旋轉速度 ${(+fields.spin.value).toFixed(2)}`);
+      });
+    }
+
+    // 擺幅滑桿
+    if (viewer && fields.swingAmp) {
+      fields.swingAmp.disabled = false;
+      fields.swingAmp.addEventListener('input', () => viewer.setSwingAmp(parseFloat(fields.swingAmp.value)));
+      fields.swingAmp.addEventListener('change', () => {
+        rememberView();
+        say(`擺幅 ±${Math.round(fields.swingAmp.value)}°`);
+      });
+    }
+
     bar.addEventListener('click', (e) => {
       const btn = e.target.closest?.('[data-a]');
       const a = btn?.dataset.a;
@@ -620,12 +644,20 @@ export function createEditor({
         pageX: () => centerOnPage('x'),
         pageY: () => centerOnPage('y'),
         viewEdit: () => setModelEdit(!modelEdit),
+        viewPivot: () => setPivotEdit(!pivotEdit),
         viewSpin: () => {
           if (!viewer) return;
           const v = viewer.getView();
           viewer.setAutoRotate(!v.autoRotate);
           rememberView();
           say(v.autoRotate ? '自動旋轉：關' : '自動旋轉：開');
+        },
+        viewSwing: () => {
+          if (!viewer) return;
+          const v = viewer.getView();
+          viewer.setSwing(!v.swing);
+          rememberView();
+          say(v.swing ? '來回擺動：關' : `來回擺動：開（±${Math.round(v.swingAmp)}°）`);
         },
         viewReset: () => {
           if (!viewer) return;
@@ -670,14 +702,19 @@ export function createEditor({
     for (const [k] of [...ALIGN_BTNS, ...DIST_BTNS, ...PAGE_BTNS]) {
       const btn = bar.querySelector(`[data-a="${k}"]`);
       if (btn) {
-        btn.disabled = modelEdit || sel.size < (need1.includes(k) ? 1 : 3);
+        btn.disabled = modelEdit || pivotEdit || sel.size < (need1.includes(k) ? 1 : 3);
       }
     }
 
     if (viewer) {
       const v = viewer.getView();
       bar.querySelector('[data-a="viewEdit"]')?.classList.toggle('is-on', modelEdit);
+      bar.querySelector('[data-a="viewPivot"]')?.classList.toggle('is-on', pivotEdit);
       bar.querySelector('[data-a="viewSpin"]')?.classList.toggle('is-on', v.autoRotate);
+      bar.querySelector('[data-a="viewSwing"]')?.classList.toggle('is-on', v.swing);
+      // 不要在使用者正拖滑桿時覆蓋它的值
+      if (fields.spin && document.activeElement !== fields.spin) fields.spin.value = v.speed ?? 0.45;
+      if (fields.swingAmp && document.activeElement !== fields.swingAmp) fields.swingAmp.value = v.swingAmp ?? 40;
       const rst = bar.querySelector('[data-a="viewReset"]');
       if (rst) rst.disabled = !viewer.getSavedView(sceneName);
     }
@@ -697,15 +734,34 @@ export function createEditor({
      3D 視角
      --------------------------------------------------------- */
   let modelEdit = false;
+  let pivotEdit = false;
 
-  /** 開啟後讓覆蓋層放行滑鼠，事件才進得到 canvas，可以直接拖模型 */
+  /** 讓覆蓋層放行滑鼠、事件進得到 canvas，並依模式切換 orbit（轉角度）/ pivot（移軸心） */
+  function applyViewInteraction() {
+    const on = modelEdit || pivotEdit;
+    layer?.classList.toggle('is-pass', on);
+    root.classList.toggle('is-model-edit', on);
+    viewer?.setInteractionMode(pivotEdit ? 'pivot' : 'orbit');
+    viewer?.showPivot(on);      // 編輯視角時都顯示軸心線（右鍵平移會移動它）
+  }
+
+  /** 調整模型：拖曳轉角度、滾輪縮放 */
   function setModelEdit(on) {
     if (!viewer) return;
     modelEdit = on;
-    layer?.classList.toggle('is-pass', on);
-    root.classList.toggle('is-model-edit', on);
-    if (on) { select(null); say('拖曳畫面轉角度、滾輪縮放，放開就記住'); }
+    if (on) { pivotEdit = false; select(null); say('左鍵拖曳轉角度、右鍵拖曳平移、滾輪縮放，放開就記住'); }
     else say('回到物件編輯');
+    applyViewInteraction();
+    syncBar();
+  }
+
+  /** 調整軸心：拖曳平移黃色軸線＝移動自動旋轉的中心 */
+  function setPivotEdit(on) {
+    if (!viewer) return;
+    pivotEdit = on;
+    if (on) { modelEdit = false; select(null); say('拖曳畫面平移黃色軸線＝移動旋轉軸心，放開就記住'); }
+    else say('回到物件編輯');
+    applyViewInteraction();
     syncBar();
   }
 
@@ -718,7 +774,7 @@ export function createEditor({
   }
 
   if (viewer) {
-    viewer.onViewEnd(() => { if (editing && modelEdit) rememberView(); });
+    viewer.onViewEnd(() => { if (editing && (modelEdit || pivotEdit)) rememberView(); });
   }
 
   /* ---------------------------------------------------------
@@ -929,6 +985,9 @@ export function createEditor({
       say('編輯模式：拖曳移動，四角等比縮放');
     } else {
       modelEdit = false;
+      pivotEdit = false;
+      viewer?.setInteractionMode('kiosk');   // 離開編輯就鎖回展示狀態：只能轉、不能平移
+      viewer?.showPivot(false);
       root.classList.remove('is-editing', 'is-model-edit');
       clearTimeout(toastTimer);
       layer?.remove(); bar?.remove(); toast?.remove();

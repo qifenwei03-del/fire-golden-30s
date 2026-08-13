@@ -203,6 +203,24 @@ stage.addEventListener('drop', (e) => {
   if (file) load(URL.createObjectURL(file), true);
 });
 
+/* 首頁的真實建築模型（BIM 匯出，離線壓縮成透視感牆面 + 白色樓板的 .glb）：
+   只換首頁的三層佔位大樓，第一頁的平面圖不動。載入失敗就退回佔位大樓。?home-model=off 可跳過。 */
+const homeLoadingEl = document.getElementById('home-loading');
+const homeProgressEl = document.getElementById('home-progress');
+
+if (params.get('home-model') !== 'off') {
+  if (homeLoadingEl) homeLoadingEl.hidden = false;
+  viewer
+    .loadHomeModel('./models/tower.glb', (pct) => {
+      if (homeProgressEl) homeProgressEl.textContent = `${Math.round(pct)}%`;
+    })
+    .then(() => { if (homeLoadingEl) homeLoadingEl.hidden = true; })
+    .catch((err) => {
+      console.error('[viewer] 首頁模型載入失敗，退回佔位大樓', err);
+      if (homeLoadingEl) homeLoadingEl.hidden = true;
+    });
+}
+
 /* =========================================================
    主色調：blue（預設）/ green，3D 場景會跟著同一組 CSS 變數
    ?theme=green 可直接指定，否則沿用上次選擇

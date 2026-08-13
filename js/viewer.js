@@ -3,7 +3,9 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
-const DRACO_PATH = 'https://unpkg.com/three@0.169.0/examples/jsm/libs/draco/';
+// Draco 解碼器放在專案內（models/draco/），不依賴外部 CDN —— 離線／網路被擋也能載入模型。
+// 路徑相對於網頁根目錄（頁面在 / 下），DRACOLoader 會去 /models/draco/ 抓。
+const DRACO_PATH = './models/draco/';
 
 /** 每個佔位場景的鏡頭預設值 */
 const SCENE_VIEWS = {
@@ -50,6 +52,9 @@ export class Viewer {
     this.fires = [];
     this.routes = [];
     this.savedViews = {};        // { flat: {pos,target,autoRotate}, tower: {...} }
+    this.customModels = {};      // { tower: Object3D } 外部載入的真實模型，蓋掉同名佔位場景
+    this.customViews = {};       // { tower: {pos,target,...} } 依模型尺寸自動框好的視角
+    this.swing = { on: false, center: 0, amp: THREE.MathUtils.degToRad(40), t0: 0 };  // 來回擺動
     this._addLights();
     this._addPlaceholder();
 
@@ -100,20 +105,42 @@ export class Viewer {
     this.setScene(this.sceneName ?? 'flat');
   }
 
-  /** 切換佔位場景：有存過視角就用存的，沒有就用該場景的預設 */
+  /** 切換場景：有載入真實模型就用它（蓋掉同名佔位），視角優先用存過的，其次自動框好的，再其次預設 */
   setScene(name) {
-    if (!this.scenes?.[name]) return;
+    if (!SCENE_VIEWS[name] && !this.customModels[name]) return;
     this.sceneName = name;
-    for (const [k, g] of Object.entries(this.scenes)) g.visible = k === name;
-    this._applyView({ ...SCENE_VIEWS[name], ...(this.savedViews[name] ?? {}) });
+    // 佔位場景：只有在沒有同名真實模型時才顯示
+    if (this.scenes) {
+      for (const [k, g] of Object.entries(this.scenes)) g.visible = k === name && !this.customModels[k];
+    }
+    // 外部真實模型：只顯示目前這一頁的
+    for (const [k, m] of Object.entries(this.customModels)) m.visible = k === name;
+    // 有真實模型就以它自動框好的視角為底，否則用佔位場景預設；存過的視角再蓋上去
+    const base = (this.customModels[name] && this.customViews[name]) || SCENE_VIEWS[name] || {};
+    this._applyView({ ...base, ...(this.savedViews[name] ?? {}) });
   }
 
   _applyView(v) {
+    if (!v.pos) return;
     this.camera.position.set(...v.pos);
     this.controls.target.set(...v.target);
     this.controls.autoRotate = v.autoRotate ?? true;
     if (v.min != null) this.controls.minDistance = v.min;
     if (v.max != null) this.controls.maxDistance = v.max;
+    if (v.near != null) this.camera.near = v.near;
+    if (v.far != null) this.camera.far = v.far;
+    if (v.near != null || v.far != null) this.camera.updateProjectionMatrix();
+    if (v.speed != null) this.controls.autoRotateSpeed = v.speed;
+    if (v.swingAmp != null) this.swing.amp = THREE.MathUtils.degToRad(v.swingAmp);
+    if (v.swing != null) {
+      this.swing.on = v.swing;
+      if (v.swing) {
+        this.controls.autoRotate = false;
+        this.swing.center = new THREE.Spherical()
+          .setFromVector3(this.camera.position.clone().sub(this.controls.target)).theta;
+        this.swing.t0 = this.clock.getElapsedTime();
+      }
+    }
     if (v.fog) { this.scene.fog.near = v.fog[0]; this.scene.fog.far = v.fog[1]; }
     this.controls.update();
   }
@@ -123,8 +150,11 @@ export class Viewer {
     const r = (n) => +n.toFixed(3);
     return {
       pos: this.camera.position.toArray().map(r),
-      target: this.controls.target.toArray().map(r),
+      target: this.controls.target.toArray().map(r),   // target = 自動旋轉的軸心
       autoRotate: this.controls.autoRotate,
+      speed: +this.controls.autoRotateSpeed.toFixed(3),
+      swing: this.swing.on,
+      swingAmp: +THREE.MathUtils.radToDeg(this.swing.amp).toFixed(1),
     };
   }
 
@@ -138,7 +168,10 @@ export class Viewer {
 
   applyView(name, v) {
     if (!Array.isArray(v?.pos) || !Array.isArray(v?.target)) return false;
-    this.savedViews[name] = { pos: v.pos, target: v.target, autoRotate: !!v.autoRotate };
+    this.savedViews[name] = {
+      pos: v.pos, target: v.target, autoRotate: !!v.autoRotate, speed: v.speed,
+      swing: !!v.swing, swingAmp: v.swingAmp,
+    };
     if (this.sceneName === name) this.setScene(name);
     return true;
   }
@@ -149,7 +182,62 @@ export class Viewer {
     if (this.sceneName === name) this.setScene(name);
   }
 
-  setAutoRotate(on) { this.controls.autoRotate = !!on; }
+  setAutoRotate(on) { this.controls.autoRotate = !!on; if (on) this.swing.on = false; }  // 兩種轉法互斥
+  /** 自動旋轉速度（可正可負，負值反向）；擺動模式也用這支當快慢 */
+  setAutoRotateSpeed(s) { this.controls.autoRotateSpeed = s; }
+
+  /** 來回擺動：在目前角度 ± 擺幅之間來回，不轉整圈 */
+  setSwing(on) {
+    this.swing.on = !!on;
+    if (on) {
+      this.controls.autoRotate = false;
+      this.swing.center = new THREE.Spherical()
+        .setFromVector3(this.camera.position.clone().sub(this.controls.target)).theta;
+      this.swing.t0 = this.clock.getElapsedTime();
+    }
+  }
+  /** 擺動幅度（左右各幾度） */
+  setSwingAmp(deg) { this.swing.amp = THREE.MathUtils.degToRad(Math.max(0, deg)); }
+
+  /** 互動模式：
+     'orbit'  編輯用 —— 左鍵轉角度、右鍵平移、滾輪縮放（右鍵平移同時移動旋轉軸心）
+     'pivot'  只平移 —— 左鍵拖曳平移（觸控／不方便按右鍵時用）
+     'kiosk'  展示用 —— 只能轉、不能平移，避免現場把模型拖走 */
+  setInteractionMode(mode) {
+    const c = this.controls;
+    if (mode === 'pivot') {
+      c.enableRotate = false; c.enablePan = true;
+      c.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
+      c.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE };
+    } else if (mode === 'kiosk') {
+      c.enableRotate = true; c.enablePan = false;
+      c.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+      c.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+    } else {
+      c.enableRotate = true; c.enablePan = true;   // 右鍵平移
+      c.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+      c.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+    }
+  }
+
+  /** 顯示／隱藏「旋轉軸心」的視覺輔助線（一條通過 target 的垂直軸） */
+  showPivot(on) {
+    if (!this._pivotHelper) {
+      const mat = new THREE.LineBasicMaterial({
+        color: new THREE.Color(css('--amber', '#ffb42e')),
+        transparent: true, opacity: 0.9, depthTest: false,
+      });
+      const geo = new THREE.BufferGeometry().setFromPoints(
+        [new THREE.Vector3(0, -1000, 0), new THREE.Vector3(0, 1000, 0)]
+      );
+      const line = new THREE.Line(geo, mat);
+      line.renderOrder = 999;
+      this._pivotHelper = line;
+      this.scene.add(line);
+    }
+    this._pivotHelper.visible = !!on;
+  }
+
   /** 使用者拖／縮放結束時通知一次（自動旋轉不會觸發） */
   onViewEnd(cb) { this.controls.addEventListener('end', cb); }
 
@@ -338,10 +426,108 @@ export class Viewer {
     return line;
   }
 
+  /* ---------- 首頁：把真實建築模型改成「透視感牆面 + 白色樓板 + 逃生動線」 ----------
+     模型在離線步驟已把材質收斂成兩種（名稱 'wall' / 'slab'），這裡照第一頁佔位場景那套
+     配色重新上材質（讀 CSS 主題變數，所以藍／綠主題一樣會跟著變）。 */
+  loadHomeModel(url, onProgress) {
+    return new Promise((resolve, reject) => {
+      this._loader().load(
+        url,
+        (gltf) => {
+          const prev = this.customModels.tower;
+          if (prev) { this.modelRoot.remove(prev); disposeTree(prev); }
+          const obj = gltf.scene;
+          this._blueprintMats = this._makeBlueprintMats();
+          this._styleBlueprint(obj);                 // 換材質 + 加結構邊線（透視感）
+          obj.add(this._buildHomeRoute());           // 逃生動線掛在模型底下，一起框、一起顯示
+          this.customModels.tower = obj;
+          this.modelRoot.add(obj);
+          this.customViews.tower = this._frameView(obj);
+          this.setScene(this.sceneName);
+          resolve(gltf);
+        },
+        (e) => onProgress?.(e.total ? (e.loaded / e.total) * 100 : 0),
+        reject
+      );
+    });
+  }
+
+  _makeBlueprintMats() {
+    // 牆板：半透明玻璃面（保留牆板、可看穿內部）+ 上面再加框線 —— 玻璃屋剖面的透視感
+    const wall = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(css('--m-wall', '#123049')),
+      roughness: 0.85, metalness: 0.0,
+      transparent: true, opacity: 0.28, depthWrite: false,   // 不寫深度，前後玻璃才會層層疊透
+      side: THREE.DoubleSide,   // 兩面都畫，轉到牆背面玻璃也在
+    });
+    const slab = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(css('--m-slab', '#e4efff')),
+      emissive: new THREE.Color(css('--m-slab', '#e4efff')), emissiveIntensity: 0.35,
+      roughness: 0.9, metalness: 0,
+      side: THREE.DoubleSide,   // 實心白樓板（不透明），任何角度都是穩定的實面
+    });
+    // 框線不寫深度：不然近側框線會把後面牆板的玻璃遮掉，整棟就變成只剩線框
+    const edge = new THREE.LineBasicMaterial({
+      color: new THREE.Color(css('--m-edge', '#74d4ff')), transparent: true, opacity: 0.5,
+      depthWrite: false,
+    });
+    return { wall, slab, edge };
+  }
+
+  _styleBlueprint(obj) {
+    const { wall, slab, edge } = this._blueprintMats;
+    obj.traverse((o) => {
+      if (!o.isMesh) return;
+      const nm = o.material?.name;
+      if (nm === 'wall-cut') { o.visible = false; return; }   // 剖面：挖掉靠近視角的兩面外牆
+      const isSlab = nm === 'slab';
+      o.material = isSlab ? slab : wall;
+      // 樓板整圈邊線（1°）；牆板玻璃面 + 結構框線（30°）
+      o.add(new THREE.LineSegments(new THREE.EdgesGeometry(o.geometry, isSlab ? 1 : 30), edge));
+    });
+  }
+
+  _tintBlueprint() {
+    const { wall, slab, edge } = this._blueprintMats;
+    wall.color.set(css('--m-wall', '#123049'));
+    slab.color.set(css('--m-slab', '#e4efff'));
+    slab.emissive.set(css('--m-slab', '#e4efff'));
+    edge.color.set(css('--m-edge', '#74d4ff'));
+  }
+
+  /* 逃生動線：頂樓起火點 → 樓梯間垂直往下 → 一樓安全出口。座標是照模型實測的樓層高度與樓梯位置抓的。 */
+  _buildHomeRoute() {
+    const g = new THREE.Group();
+    const FY = [34.82, 38.22, 41.63];        // 三層樓板高度（實測）
+    const SX = -12.4, SZ = -20.2;            // 樓梯間中心（實測）
+    const top = FY[2] + 0.2;
+
+    g.add(this._makeFire(-4, FY[2] + 0.6, -32));   // 起火點在頂樓遠端
+
+    g.add(this._makeRoute([
+      [-4, top, -32], [SX, top, SZ],               // 頂樓 → 樓梯間
+      [SX, FY[1] + 0.2, SZ], [SX, FY[0] + 0.2, SZ], // 沿樓梯往下到一樓
+      [SX, FY[0] + 0.2, -8], [-6, FY[0] + 0.2, 0.6], // 一樓 → 安全出口
+    ]));
+
+    const exitColor = new THREE.Color(css('--exit', '#3dffa0'));
+    const exit = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 1.0, 1.6),
+      new THREE.MeshBasicMaterial({ color: exitColor })
+    );
+    exit.position.set(-6, FY[0] + 0.7, 0.9);
+    g.add(exit);
+    const exitLight = new THREE.PointLight(exitColor, 16, 14, 2);
+    exitLight.position.set(-6, FY[0] + 1.1, 0.6);
+    g.add(exitLight);
+    return g;
+  }
+
   /** 主題（<html data-theme>）換掉之後重新套用場景配色 */
   applyTheme() {
     this.scene.fog.color.set(css('--m-fog', '#031020'));
     this._tintLights();
+    if (this._blueprintMats) this._tintBlueprint();   // 首頁真實模型也跟著換色
     if (!this.placeholder) return;          // 已載入外部模型就不動它
     this.modelRoot.remove(this.placeholder);
     disposeTree(this.placeholder);
@@ -393,6 +579,18 @@ export class Viewer {
         f.light.intensity = 18 + p * 14;
       }
       for (const r of this.routes ?? []) r.material.dashOffset = -t * 1.6;
+      if (this.swing.on) {
+        // 在 center ± amp 之間用正弦來回擺動；快慢沿用自動旋轉速度那支
+        const off = this.camera.position.clone().sub(this.controls.target);
+        const sph = new THREE.Spherical().setFromVector3(off);
+        const w = Math.abs(this.controls.autoRotateSpeed) * 0.9;
+        sph.theta = this.swing.center + this.swing.amp * Math.sin((t - this.swing.t0) * w);
+        this.camera.position.copy(this.controls.target).add(off.setFromSpherical(sph));
+      }
+      if (this._pivotHelper?.visible) {
+        const tg = this.controls.target;
+        this._pivotHelper.position.set(tg.x, 0, tg.z);   // 軸心輔助線跟著 target 走
+      }
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
     };
@@ -447,25 +645,29 @@ export class Viewer {
     }
   }
 
-  /** 依模型尺寸自動調整相機距離 */
-  frameObject(obj) {
+  /** 依模型尺寸算出一組「框好」的視角描述（不直接動相機，給 setScene 當底用） */
+  _frameView(obj) {
     const box = new THREE.Box3().setFromObject(obj);
-    if (box.isEmpty()) return;
+    if (box.isEmpty()) return null;
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
     const dist = radius / Math.sin((this.camera.fov * Math.PI) / 360) * 1.5;
+    const pos = center.clone().add(new THREE.Vector3(0.62, 0.66, 0.82).normalize().multiplyScalar(dist));
+    return {
+      pos: pos.toArray(),
+      target: center.toArray(),
+      min: dist * 0.15, max: dist * 5,
+      near: dist / 100, far: dist * 12,
+      fog: [dist * 0.9, dist * 3.4],
+      speed: 0.45, swing: false, swingAmp: 40,
+    };
+  }
 
-    this.controls.target.copy(center);
-    this.camera.position.copy(center).add(new THREE.Vector3(0.62, 0.66, 0.82).normalize().multiplyScalar(dist));
-    this.camera.near = dist / 100;
-    this.camera.far = dist * 12;
-    this.camera.updateProjectionMatrix();
-    this.controls.minDistance = dist * 0.15;
-    this.controls.maxDistance = dist * 5;
-    this.scene.fog.near = dist * 0.9;
-    this.scene.fog.far = dist * 3.4;
-    this.controls.update();
+  /** 依模型尺寸自動調整相機距離（整份取代場景時用） */
+  frameObject(obj) {
+    const v = this._frameView(obj);
+    if (v) this._applyView(v);
   }
 }
 
