@@ -221,6 +221,19 @@ if (params.get('home-model') !== 'off') {
     });
 }
 
+/* 第一頁的單層真實模型：套用「佔位模型那套」簡單材質（實心深色牆 + 每個轉角都有線）。
+   載入失敗退回佔位平面圖。?flat-model=off 可跳過。 */
+if (params.get('flat-model') !== 'off') {
+  setLoading(true);
+  viewer
+    .loadFlatModel('./models/flat.glb', (pct) => setLoading(true, pct))
+    .then(() => { setLoading(false); hintEl.style.opacity = '0'; })
+    .catch((err) => {
+      console.error('[viewer] 第一頁模型載入失敗，退回佔位平面圖', err);
+      setLoading(false);
+    });
+}
+
 /* =========================================================
    主色調：blue（預設）/ green，3D 場景會跟著同一組 CSS 變數
    ?theme=green 可直接指定，否則沿用上次選擇

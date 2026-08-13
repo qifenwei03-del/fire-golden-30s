@@ -437,12 +437,36 @@ export class Viewer {
           const prev = this.customModels.tower;
           if (prev) { this.modelRoot.remove(prev); disposeTree(prev); }
           const obj = gltf.scene;
-          this._blueprintMats = this._makeBlueprintMats();
-          this._styleBlueprint(obj);                 // 換材質 + 加結構邊線（透視感）
+          if (!this._blueprintMats) this._blueprintMats = this._makeBlueprintMats();  // 首頁：玻璃 + 白樓板
+          this._styleBlueprint(obj, this._blueprintMats);   // 換材質 + 加結構邊線（透視感）
           obj.add(this._buildHomeRoute());           // 逃生動線掛在模型底下，一起框、一起顯示
           this.customModels.tower = obj;
           this.modelRoot.add(obj);
           this.customViews.tower = this._frameView(obj);
+          this.setScene(this.sceneName);
+          resolve(gltf);
+        },
+        (e) => onProgress?.(e.total ? (e.loaded / e.total) * 100 : 0),
+        reject
+      );
+    });
+  }
+
+  /** 第一頁：載入單層真實模型到 flat 場景，套用同一套玻璃/白樓板/框線 + 單層逃生動線 */
+  loadFlatModel(url, onProgress) {
+    return new Promise((resolve, reject) => {
+      this._loader().load(
+        url,
+        (gltf) => {
+          const prev = this.customModels.flat;
+          if (prev) { this.modelRoot.remove(prev); disposeTree(prev); }
+          const obj = gltf.scene;
+          if (!this._flatMats) this._flatMats = this._makeFlatMats();   // 第一頁：深色 + 強框線
+          this._styleBlueprint(obj, this._flatMats);
+          obj.add(this._buildFlatRoute());
+          this.customModels.flat = obj;
+          this.modelRoot.add(obj);
+          this.customViews.flat = this._frameView(obj);
           this.setScene(this.sceneName);
           resolve(gltf);
         },
@@ -471,28 +495,57 @@ export class Viewer {
       color: new THREE.Color(css('--m-edge', '#74d4ff')), transparent: true, opacity: 0.5,
       depthWrite: false,
     });
-    return { wall, slab, edge };
+    return { wall, slab, edge, wallEdgeAngle: 30 };   // 首頁牆面只留主要結構線（30°）
   }
 
-  _styleBlueprint(obj) {
-    const { wall, slab, edge } = this._blueprintMats;
+  _styleBlueprint(obj, mats) {
+    const { wall, slab, edge } = mats;
+    const wallAngle = mats.wallEdgeAngle ?? 30;
     obj.traverse((o) => {
       if (!o.isMesh) return;
       const nm = o.material?.name;
       if (nm === 'wall-cut') { o.visible = false; return; }   // 剖面：挖掉靠近視角的兩面外牆
+      if (nm === 'floor') { o.visible = false; return; }      // 第一頁：地板抽掉（樓梯 slab 保留）
       const isSlab = nm === 'slab';
       o.material = isSlab ? slab : wall;
-      // 樓板整圈邊線（1°）；牆板玻璃面 + 結構框線（30°）
-      o.add(new THREE.LineSegments(new THREE.EdgesGeometry(o.geometry, isSlab ? 1 : 30), edge));
+      // 樓板整圈邊線（1°）；牆板依材質設定的門檻（首頁 30° 只留結構線、第一頁 1° 每個轉角都畫）
+      o.add(new THREE.LineSegments(new THREE.EdgesGeometry(o.geometry, isSlab ? 1 : wallAngle), edge));
     });
   }
 
+  /** 第一頁：跟佔位模型同一套簡單材質 —— 實心深色牆 + 淺藍框線（每個轉角都有線）+ 白色樓板 */
+  _makeFlatMats() {
+    const wall = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(css('--m-wall', '#123049')),
+      roughness: 0.8, metalness: 0.05, side: THREE.DoubleSide,  // 實心（不透明）深色牆，後面的框線會被擋掉→乾淨
+    });
+    const slab = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(css('--m-slab', '#e4efff')),
+      emissive: new THREE.Color(css('--m-slab', '#e4efff')), emissiveIntensity: 0.14,
+      roughness: 0.9, metalness: 0, side: THREE.DoubleSide,   // 白色樓板
+    });
+    const edge = new THREE.LineBasicMaterial({
+      color: new THREE.Color(css('--m-edge', '#74d4ff')),
+      transparent: true, opacity: 0.6, depthWrite: false,   // 淺藍框線
+    });
+    return { wall, slab, edge, wallEdgeAngle: 1 };   // 1° = 每條邊/每個轉角都畫（同佔位）
+  }
+
   _tintBlueprint() {
-    const { wall, slab, edge } = this._blueprintMats;
-    wall.color.set(css('--m-wall', '#123049'));
-    slab.color.set(css('--m-slab', '#e4efff'));
-    slab.emissive.set(css('--m-slab', '#e4efff'));
-    edge.color.set(css('--m-edge', '#74d4ff'));
+    if (this._blueprintMats) {                 // 首頁：玻璃 + 白樓板
+      const m = this._blueprintMats;
+      m.wall.color.set(css('--m-wall', '#123049'));
+      m.slab.color.set(css('--m-slab', '#e4efff'));
+      m.slab.emissive.set(css('--m-slab', '#e4efff'));
+      m.edge.color.set(css('--m-edge', '#74d4ff'));
+    }
+    if (this._flatMats) {                       // 第一頁：實心深色色塊 + 淺藍框線 + 白樓板
+      const m = this._flatMats;
+      m.wall.color.set(css('--m-wall', '#123049'));
+      m.slab.color.set(css('--m-slab', '#e4efff'));
+      m.slab.emissive.set(css('--m-slab', '#e4efff'));
+      m.edge.color.set(css('--m-edge', '#74d4ff'));
+    }
   }
 
   /* 逃生動線：頂樓起火點 → 樓梯間垂直往下 → 一樓安全出口。座標是照模型實測的樓層高度與樓梯位置抓的。 */
@@ -523,11 +576,33 @@ export class Viewer {
     return g;
   }
 
+  /* 第一頁單層逃生動線：起火點 → 樓梯間 → 一樓出口（樓層高度 ≈41.6、樓梯間同棟座標） */
+  _buildFlatRoute() {
+    const g = new THREE.Group();
+    const Y = 41.6, y = Y + 0.2;
+    const SX = -12.4, SZ = -20.2;
+    g.add(this._makeFire(-4, Y + 0.6, -32));
+    g.add(this._makeRoute([
+      [-4, y, -32], [SX, y, SZ], [SX, y, -8], [-6, y, 0.6],
+    ]));
+    const exitColor = new THREE.Color(css('--exit', '#3dffa0'));
+    const exit = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 1.0, 1.6),
+      new THREE.MeshBasicMaterial({ color: exitColor })
+    );
+    exit.position.set(-6, Y + 0.7, 0.9);
+    g.add(exit);
+    const exitLight = new THREE.PointLight(exitColor, 16, 14, 2);
+    exitLight.position.set(-6, Y + 1.1, 0.6);
+    g.add(exitLight);
+    return g;
+  }
+
   /** 主題（<html data-theme>）換掉之後重新套用場景配色 */
   applyTheme() {
     this.scene.fog.color.set(css('--m-fog', '#031020'));
     this._tintLights();
-    if (this._blueprintMats) this._tintBlueprint();   // 首頁真實模型也跟著換色
+    if (this._blueprintMats || this._flatMats) this._tintBlueprint();   // 真實模型也跟著換色
     if (!this.placeholder) return;          // 已載入外部模型就不動它
     this.modelRoot.remove(this.placeholder);
     disposeTree(this.placeholder);
@@ -645,21 +720,27 @@ export class Viewer {
     }
   }
 
-  /** 依模型尺寸算出一組「框好」的視角描述（不直接動相機，給 setScene 當底用） */
+  /** 依模型尺寸算出一組「框好」的視角描述（不直接動相機，給 setScene 當底用）。
+     用外接球 + 取水平/垂直較窄的視角當限制 —— 球體轉到任何角度大小都一樣，
+     所以模型不管怎麼旋轉都塞得進畫面，不會「轉一轉就轉出視窗外」。 */
   _frameView(obj) {
     const box = new THREE.Box3().setFromObject(obj);
     if (box.isEmpty()) return null;
-    const size = box.getSize(new THREE.Vector3());
-    const center = box.getCenter(new THREE.Vector3());
-    const radius = Math.max(size.x, size.y, size.z) * 0.5 || 1;
-    const dist = radius / Math.sin((this.camera.fov * Math.PI) / 360) * 1.5;
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const center = sphere.center;
+    const R = sphere.radius || 1;
+    const vfov = (this.camera.fov * Math.PI) / 180;
+    const aspect = this.camera.aspect || 1;
+    const hfov = 2 * Math.atan(aspect * Math.tan(vfov / 2));
+    const limit = Math.min(vfov, hfov);                 // 較窄的那個方向才是真正的限制
+    const dist = (R / Math.sin(limit / 2)) * 1.4;       // 外接球 + 留白
     const pos = center.clone().add(new THREE.Vector3(0.62, 0.66, 0.82).normalize().multiplyScalar(dist));
     return {
       pos: pos.toArray(),
-      target: center.toArray(),
-      min: dist * 0.15, max: dist * 5,
+      target: center.toArray(),                          // 軸心 = 外接球中心
+      min: dist * 0.2, max: dist * 4,
       near: dist / 100, far: dist * 12,
-      fog: [dist * 0.9, dist * 3.4],
+      fog: [dist * 1.0, dist * 3.6],
       speed: 0.45, swing: false, swingAmp: 40,
     };
   }
