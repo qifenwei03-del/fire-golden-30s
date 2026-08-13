@@ -1,7 +1,5 @@
-# 編輯模式在瀏覽器裡存下來的版面／參考線（要保留就把這幾行刪掉）
-layout.json
-layout-home.json
-layout-guides.json
+# 編輯模式的版面／參考線改成「要進版控」，這樣調好的視角/版面才會跟著部署上線。
+# （之前是被排除的；為了 GitHub Pages 顯示編輯後的畫面才改成追蹤）
 
 # OS
 Thumbs.db
