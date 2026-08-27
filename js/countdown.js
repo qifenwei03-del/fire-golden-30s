@@ -12,6 +12,7 @@ export function createCountdown({
   stageEl = null,      // 會被寫上 data-stage，讓整組圓盤跟著時段換色
   urgentAt = 5,        // 剩幾秒開始加 .is-urgent（數字閃爍）
   onEnd = null,        // 倒數歸零時呼叫一次（每一輪只呼叫一次）
+  onPhase = null,      // 階段變化時呼叫（0=0-10s / 1=10-20s / 2=20-30s / -1=未開始）
   duration = 30,
   ticks = 60,
   loop = true,
@@ -77,6 +78,7 @@ export function createCountdown({
         else stageEl.dataset.stage = String(idx);
       }
       phaseCache = idx;
+      onPhase?.(idx);           // 通知外部（例如 3D 逃生點）目前在哪個時段
     }
   }
 

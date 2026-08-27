@@ -9,7 +9,7 @@ const DRACO_PATH = './models/draco/';
 
 /** 每個佔位場景的鏡頭預設值 */
 const SCENE_VIEWS = {
-  flat:  { pos: [14, 15, 18], target: [0, 1, 0], min: 6, max: 90, fog: [26, 62] },
+  flat:  { pos: [14, 15, 18], target: [0, 1, 0], min: 6, max: 90, fog: [26, 62], autoRotate: false, swing: false },  // 第一頁不轉、不擺動
   tower: { pos: [18, 14, 22], target: [0, 3.2, 0], min: 8, max: 110, fog: [30, 76] },
 };
 
@@ -198,6 +198,19 @@ export class Viewer {
   }
   /** 擺動幅度（左右各幾度） */
   setSwingAmp(deg) { this.swing.amp = THREE.MathUtils.degToRad(Math.max(0, deg)); }
+
+  /** 逃生起點圓點的時段（跟倒數同步）：0=0-10s藍 1=10-20s黃 2=20-30s紅。
+     顏色一切換就換一條動線，並把 2 秒輪播節奏從這一刻重新起算。 */
+  setRoutePhase(idx) {
+    const changed = idx !== this._routePhase;
+    this._routePhase = idx;
+    const set = this._routeSets?.flat;                 // 只有第一頁的動線跟倒數時段連動
+    if (changed && set?.groups.length) {
+      set.t0 = this.clock.getElapsedTime();            // 顏色一換 = 換一條動線 + 節奏重新起算
+      set.slot = 0;
+      this._pickRouteInSet(set);
+    }
+  }
 
   /** 互動模式：
      'orbit'  編輯用 —— 左鍵轉角度、右鍵平移、滾輪縮放（右鍵平移同時移動旋轉軸心）
@@ -429,7 +442,12 @@ export class Viewer {
   /* ---------- 首頁：把真實建築模型改成「透視感牆面 + 白色樓板 + 逃生動線」 ----------
      模型在離線步驟已把材質收斂成兩種（名稱 'wall' / 'slab'），這裡照第一頁佔位場景那套
      配色重新上材質（讀 CSS 主題變數，所以藍／綠主題一樣會跟著變）。 */
-  loadHomeModel(url, onProgress) {
+  async loadHomeModel(url, onProgress) {
+    let routeData = null;
+    try {
+      const res = await fetch('./models/routes-home.json', { cache: 'no-cache' });
+      if (res.ok) routeData = await res.json();
+    } catch { /* 沒有路線檔就不畫逃生動線 */ }
     return new Promise((resolve, reject) => {
       this._loader().load(
         url,
@@ -439,7 +457,7 @@ export class Viewer {
           const obj = gltf.scene;
           if (!this._blueprintMats) this._blueprintMats = this._makeBlueprintMats();  // 首頁：玻璃 + 白樓板
           this._styleBlueprint(obj, this._blueprintMats);   // 換材質 + 加結構邊線（透視感）
-          obj.add(this._buildHomeRoute());           // 逃生動線掛在模型底下，一起框、一起顯示
+          if (routeData?.routes?.length) obj.add(this._buildRoutes('tower', routeData.routes, { phase: false }));  // 逃生動線（固定紅/綠）
           this.customModels.tower = obj;
           this.modelRoot.add(obj);
           this.customViews.tower = this._frameView(obj);
@@ -453,7 +471,12 @@ export class Viewer {
   }
 
   /** 第一頁：載入單層真實模型到 flat 場景，套用同一套玻璃/白樓板/框線 + 單層逃生動線 */
-  loadFlatModel(url, onProgress) {
+  async loadFlatModel(url, onProgress) {
+    let routeData = null;
+    try {
+      const res = await fetch('./models/routes.json', { cache: 'no-cache' });
+      if (res.ok) routeData = await res.json();
+    } catch { /* 沒有路線檔就不畫逃生動線 */ }
     return new Promise((resolve, reject) => {
       this._loader().load(
         url,
@@ -463,10 +486,10 @@ export class Viewer {
           const obj = gltf.scene;
           if (!this._flatMats) this._flatMats = this._makeFlatMats();   // 第一頁：深色 + 強框線
           this._styleBlueprint(obj, this._flatMats);
-          obj.add(this._buildFlatRoute());
+          if (routeData?.routes?.length) obj.add(this._buildRoutes('flat', routeData.routes, { phase: true }));  // 逃生動線（起點跟倒數變色）
           this.customModels.flat = obj;
           this.modelRoot.add(obj);
-          this.customViews.flat = this._frameView(obj);
+          this.customViews.flat = { ...this._frameView(obj), autoRotate: false, swing: false };  // 第一頁預設就不轉
           this.setScene(this.sceneName);
           resolve(gltf);
         },
@@ -548,54 +571,76 @@ export class Viewer {
     }
   }
 
-  /* 逃生動線：頂樓起火點 → 樓梯間垂直往下 → 一樓安全出口。座標是照模型實測的樓層高度與樓梯位置抓的。 */
-  _buildHomeRoute() {
+  /* 逃生動線：第一頁(flat)、首頁(tower)各建立一組獨立的路線集。
+     每條起點閃紅、終點閃綠；一次只隨機顯示一條、每 2 秒換、下一條避開前兩條；載入後第一秒先不出現。
+     phase=true：起點顏色跟倒數時段變（藍→黃→紅，第一頁用）；false：固定紅（首頁用）。 */
+  _buildRoutes(name, routes, { phase = false } = {}) {
+    this._routeSets = this._routeSets || {};
     const g = new THREE.Group();
-    const FY = [34.82, 38.22, 41.63];        // 三層樓板高度（實測）
-    const SX = -12.4, SZ = -20.2;            // 樓梯間中心（實測）
-    const top = FY[2] + 0.2;
-
-    g.add(this._makeFire(-4, FY[2] + 0.6, -32));   // 起火點在頂樓遠端
-
-    g.add(this._makeRoute([
-      [-4, top, -32], [SX, top, SZ],               // 頂樓 → 樓梯間
-      [SX, FY[1] + 0.2, SZ], [SX, FY[0] + 0.2, SZ], // 沿樓梯往下到一樓
-      [SX, FY[0] + 0.2, -8], [-6, FY[0] + 0.2, 0.6], // 一樓 → 安全出口
-    ]));
-
-    const exitColor = new THREE.Color(css('--exit', '#3dffa0'));
-    const exit = new THREE.Mesh(
-      new THREE.BoxGeometry(0.16, 1.0, 1.6),
-      new THREE.MeshBasicMaterial({ color: exitColor })
-    );
-    exit.position.set(-6, FY[0] + 0.7, 0.9);
-    g.add(exit);
-    const exitLight = new THREE.PointLight(exitColor, 16, 14, 2);
-    exitLight.position.set(-6, FY[0] + 1.1, 0.6);
-    g.add(exitLight);
+    const set = { groups: [], startDots: [], recent: [], cur: -1, slot: -1, phase };
+    const lineColor = new THREE.Color(css('--exit', '#3dffa0'));
+    for (const r of routes) {
+      const rg = new THREE.Group();
+      const pts = r.points.map((p) => new THREE.Vector3(p[0], p[1] + 0.15, p[2]));  // 稍微抬離地面
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(pts),
+        new THREE.LineDashedMaterial({ color: lineColor, dashSize: 0.7, gapSize: 0.45, transparent: true, opacity: 0.95 })
+      );
+      line.computeLineDistances();
+      this.routes.push(line);                                    // 虛線流動
+      rg.add(line);
+      const start = this._makeDot(pts[0].toArray(), 0xff3b2a, { big: true });        // 起點大紅點
+      rg.add(start.group);
+      set.startDots.push(phase
+        ? { ...start, stops: [new THREE.Color(css('--m-edge', '#74d4ff')), new THREE.Color(css('--amber', '#ffb42e')), new THREE.Color('#ff3b2a')] }
+        : { ...start });
+      const end = this._makeDot(pts[pts.length - 1].toArray(), 0x3dffa0);            // 終點綠點
+      rg.add(end.group);
+      this.fires.push({ halo: end.halo, light: end.light });                         // 綠終點：柔和脈動
+      rg.visible = false;
+      g.add(rg);
+      set.groups.push(rg);
+    }
+    set.gate = this.clock.getElapsedTime() + 1;   // 載入後第一秒先不出現（避開載入卡頓弄亂第一條）
+    set.t0 = set.gate;                            // 第一條從第 1 秒開始、完整 2 秒
+    this._routeSets[name] = set;
     return g;
   }
 
-  /* 第一頁單層逃生動線：起火點 → 樓梯間 → 一樓出口（樓層高度 ≈41.6、樓梯間同棟座標） */
-  _buildFlatRoute() {
+  /** 在一組路線集裡隨機顯示一條（避開最近兩條），其餘隱藏 */
+  _pickRouteInSet(set) {
+    const n = set.groups.length;
+    if (!n) return;
+    const avoid = set.recent;
+    let pool = [];
+    for (let k = 0; k < n; k++) if (!avoid.includes(k)) pool.push(k);
+    if (!pool.length) for (let k = 0; k < n; k++) if (k !== set.cur) pool.push(k);
+    if (!pool.length) pool = [...Array(n).keys()];
+    const i = pool[Math.floor(Math.random() * pool.length)];
+    set.cur = i;
+    set.recent = [i, ...avoid].slice(0, 2);
+    set.groups.forEach((rg, k) => { rg.visible = k === i; });
+  }
+
+  /** 圓點：回傳 {group, core, halo, light}，由呼叫端決定要掛到哪個動畫清單；big=true 加大 */
+  _makeDot([x, y, z], color, { big = false } = {}) {
     const g = new THREE.Group();
-    const Y = 41.6, y = Y + 0.2;
-    const SX = -12.4, SZ = -20.2;
-    g.add(this._makeFire(-4, Y + 0.6, -32));
-    g.add(this._makeRoute([
-      [-4, y, -32], [SX, y, SZ], [SX, y, -8], [-6, y, 0.6],
-    ]));
-    const exitColor = new THREE.Color(css('--exit', '#3dffa0'));
-    const exit = new THREE.Mesh(
-      new THREE.BoxGeometry(0.16, 1.0, 1.6),
-      new THREE.MeshBasicMaterial({ color: exitColor })
+    g.position.set(x, y, z);
+    const coreR = big ? 0.6 : 0.35;
+    const haloR = big ? 0.8 : 0.9;
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(coreR, 20, 14),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1 })
     );
-    exit.position.set(-6, Y + 0.7, 0.9);
-    g.add(exit);
-    const exitLight = new THREE.PointLight(exitColor, 16, 14, 2);
-    exitLight.position.set(-6, Y + 1.1, 0.6);
-    g.add(exitLight);
-    return g;
+    g.add(core);
+    const halo = new THREE.Mesh(
+      new THREE.SphereGeometry(haloR, 20, 14),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.2, depthWrite: false })
+    );
+    g.add(halo);
+    const light = new THREE.PointLight(color, 14, big ? 14 : 10, 2);
+    g.add(light);
+    return { group: g, core, halo, light };
   }
 
   /** 主題（<html data-theme>）換掉之後重新套用場景配色 */
@@ -654,6 +699,29 @@ export class Viewer {
         f.light.intensity = 18 + p * 14;
       }
       for (const r of this.routes ?? []) r.material.dashOffset = -t * 1.6;
+      // 逃生動線（第一頁 flat / 首頁 tower 各一組，獨立輪播；起點圓點閃爍）
+      const phase = Math.max(0, Math.min(2, this._routePhase ?? 0));
+      const bk = 0.5 + 0.5 * Math.sin(t * Math.PI * 2);   // 一秒閃一次
+      for (const set of Object.values(this._routeSets ?? {})) {
+        if (t < set.gate) {                               // 載入後第一秒：全部隱藏
+          if (set.slot !== -1) { set.slot = -1; set.groups.forEach((gr) => { gr.visible = false; }); }
+        } else {                                          // 之後每 2 秒換一條
+          const slot = Math.floor((t - set.t0) / 2.0);
+          if (slot !== set.slot) { set.slot = slot; this._pickRouteInSet(set); }
+        }
+        for (const b of set.startDots) {                  // 起點閃爍（第一頁跟倒數變色，首頁固定紅）
+          if (b.stops) {
+            const c = b.stops[phase];
+            b.core.material.color.copy(c); b.halo.material.color.copy(c); b.light.color.copy(c);
+          }
+          const haloBase = (b.stops && phase >= 2) ? 1.3 : 0.7;   // 第一頁紅色階段光暈放大
+          const lightMax = (b.stops && phase >= 2) ? 34 : 26;
+          b.core.scale.setScalar(0.85 + 0.35 * bk);
+          b.halo.scale.setScalar(haloBase + 0.9 * bk);
+          b.halo.material.opacity = 0.1 + 0.4 * bk;
+          b.light.intensity = 4 + lightMax * bk;
+        }
+      }
       if (this.swing.on) {
         // 在 center ± amp 之間用正弦來回擺動；快慢沿用自動旋轉速度那支
         const off = this.camera.position.clone().sub(this.controls.target);

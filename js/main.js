@@ -28,6 +28,11 @@ const countdown = createCountdown({
   phaseEls: [...document.querySelectorAll('#phases .phase')],
   stageEl: document.querySelector('.timer'),
   duration: 30,
+  onPhase: (idx) => {
+    viewer.setRoutePhase(idx);                   // 逃生起點圓點顏色跟著倒數時段（藍→黃→紅）
+    const first = pageEls.get('first');          // 第一頁標題「30」與「每一秒都很關鍵」也跟著時段換色
+    if (first) { if (idx < 0) delete first.dataset.stage; else first.dataset.stage = String(idx); }
+  },
   onEnd: () => {
     // 編輯版面時不要把人踢走
     if (welcomeDone || current !== WELCOME_FROM || editors[current]?.isEditing()) return;
@@ -143,6 +148,13 @@ loginForm.addEventListener('submit', (e) => {
     void loginForm.offsetWidth;            // 重新觸發抖動動畫
     loginForm.classList.add('is-empty');
     loginName.focus();
+    return;
+  }
+
+  // 輸入 123 → 登入成功，連到紅色介面
+  if (name === '123') {
+    resetLogin();                          // 清空，回到首頁時是乾淨的登入框
+    goto('red');
     return;
   }
 

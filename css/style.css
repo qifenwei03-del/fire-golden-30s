@@ -420,6 +420,15 @@ svg{display:block}
 }
 .side-head p{margin-top:.5rem;font-size:.8rem;line-height:1.6;color:var(--ink-3);letter-spacing:.06em}
 
+/* 第一頁標題「30」與「每一秒都很關鍵」跟著倒數時段換色（藍→黃→紅，與圓盤／3D 逃生點同步）
+   data-stage 由 main.js 的 onPhase 掛在 .page--main 上 */
+.hero__num,.side-head h2{transition:color .4s var(--ease),text-shadow .4s var(--ease)}
+.page--main[data-stage="0"] .hero__num,.page--main[data-stage="0"] .side-head h2{color:var(--stage-0)}
+.page--main[data-stage="1"] .hero__num,.page--main[data-stage="1"] .side-head h2{color:var(--stage-1)}
+.page--main[data-stage="2"] .hero__num,.page--main[data-stage="2"] .side-head h2{color:var(--stage-2)}
+.page--main[data-stage] .hero__num,
+.page--main[data-stage] .side-head h2{text-shadow:0 0 1.6rem color-mix(in srgb, currentColor 45%, transparent)}
+
 .phases{list-style:none;flex:1;min-height:0;display:flex;flex-direction:column;gap:1.1rem;justify-content:center}
 .phase{
   --ch:.7rem;

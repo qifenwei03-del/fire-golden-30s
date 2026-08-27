@@ -7,6 +7,53 @@
 
 ---
 
+## 0. 本輪最新進度（3D 真實模型 + 逃生動線 + 上線）
+
+> 這一輪把兩頁的 3D 從「程式畫的佔位模型」換成**使用者提供的真實 BIM 模型**，加上**逃生動線**，並**部署到 GitHub Pages**。下面是重點；細節看 `js/viewer.js`。
+
+### 0.1 已上線（重要）
+- **repo 已改成 PUBLIC**（原本 private，Pages 私有要付費；使用者選擇公開）。
+- **GitHub Pages 已啟用並在跑**：<https://qifenwei03-del.github.io/fire-golden-30s/>（deploy from `main` / root）。
+- **更新流程**：本機改 → `git commit` + `git push` → Pages 約 1 分鐘自動重建。
+- **擋搜尋**：`robots.txt`（Disallow /）＋ `index.html` 的 `<meta name="robots" noindex>` ＋ `server.mjs` 的 `X-Robots-Tag`。Pages 上真正有效的是 **meta noindex**（子路徑的 robots.txt 爬蟲不讀）。網址公開、但不被搜尋索引 —— 這是刻意的。
+
+### 0.2 3D 模型（真實 BIM，離線壓縮過）
+- 檔案：`models/tower.glb`（首頁三層，~880KB）、`models/flat.glb`（第一頁單層「切平面」，~270KB），都 Draco 壓縮。
+- **原始模型在** `C:\Users\USER\Desktop\vb\`（`3層/標準層三層.gltf`、`一層切平面/切平面.gltf`…，都是 Revit 匯出、玻璃材質、幾十～兩百 MB）。
+- **離線前處理管線**（腳本在 `tools/`）：`node tools/restyle-tower.mjs`（或 `restyle-flat.mjs`）依幾何把材質收斂成幾個具名材質（`wall`/`slab`/`wall-cut`/`floor`），再
+  `gltf-transform optimize <restyled> <out>.glb --compress draco --texture-compress false --simplify false`。
+  **材質「名稱」是離線與執行期之間唯一的橋樑**（viewer 靠 `o.material.name` 決定玻璃/白/隱藏）。
+  ⚠️ `@gltf-transform/cli` 只裝在**當次 SDK 暫存區**（會消失）；要重跑先 `npm i @gltf-transform/cli`。
+- **Draco 解碼器已放進專案** `models/draco/`（`js/viewer.js` 的 `DRACO_PATH='./models/draco/'`），不再依賴 unpkg CDN —— 之前「模型等五分鐘不出現」就是卡在抓 CDN 解碼器。`server.mjs` 也補了 `.wasm` MIME。
+
+### 0.3 兩頁的視覺（都在 viewer 執行期上材質，讀 CSS 主題色）
+- **首頁（tower）**：半透明玻璃牆（`_makeBlueprintMats`，opacity .28、DoubleSide、depthWrite false）+ 白色實心樓板/樓梯 + **近側兩面外牆做剖面挖掉**（`wall-cut` → 隱藏）+ 牆框線 30°。存了一個**來回擺動 ±33°** 的視角（`layout-home.json`）。
+- **第一頁（flat）**：`_makeFlatMats` —— **實心不透明深色牆**（擋掉後面框線 → 乾淨）+ **淺藍框線、門檻 1°（每個轉角都畫）** + 白色樓梯 + **地板抽掉**（`floor` → 隱藏）。**固定俯視、不轉**（`layout.json` 的 view + `SCENE_VIEWS.flat.autoRotate:false` + `loadFlatModel` 把 `customViews.flat` 強制 `autoRotate:false, swing:false`）。
+- 框線邊數很多（首頁牆 ~40 萬段、第一頁 ~13 萬段），是執行期 `EdgesGeometry` 算的 → **首次載入會多花 1~3 秒**（尚未離線烘焙；之後可優化）。
+- 自動框視角 `_frameView` 用**外接球 + 視窗長寬比取較窄方向**，模型旋轉不會轉出畫面。
+
+### 0.4 逃生動線（重構成「每頁一組、互相獨立」的路線集）
+- 資料：`models/routes.json`（第一頁）、`models/routes-home.json`（首頁）。由 `tools/extract-routes.mjs` / `extract-home.mjs` 從 `逃生動線.gltf`（LINE_STRIP 折線，節點名 `動線01~05`）抽出座標。首頁那份已**正規化**：紅起點在上層、綠終點在地面出口（Y≈35）。
+- 架構（`js/viewer.js`）：`this._routeSets = { flat, tower }`，`_buildRoutes(name, routes, {phase})` 建一組、`_pickRouteInSet(set)` 隨機挑一條。動畫迴圈遍歷每組。
+- 行為：**5 條、一次只顯示一條、每 2 秒隨機換、下一條避開前兩條、載入後第一秒不出現**（`set.gate`）。起點大**紅**圓點、終點**綠**圓點，都會閃（1 秒一次）。
+- **第一頁**起點顏色跟倒數時段變（`phase:true`，藍→黃→紅，紅色階段光暈放大）；**首頁**固定紅（`phase:false`，沒倒數）。
+- 節奏對齊：輪播用 viewer 動畫時鐘（`set.t0`），2 秒是 1 秒閃的整數倍 → 每次換都落在同一閃爍相位。
+
+### 0.5 倒數連動變色（第一頁）
+- `countdown.js` 新增 `onPhase(idx)`；`main.js` 轉給 `viewer.setRoutePhase(idx)`（動線起點變色）**並**在 `.page--main` 掛 `data-stage`。
+- `css/style.css` 用 `.page--main[data-stage]` 讓**標題「30」（`.hero__num`）和「每一秒都很關鍵」（`.side-head h2`）** 跟著 `--stage-0/1/2`（藍/黃/紅）變色。倒數大數字本來就會變（用 `--hot`）。
+
+### 0.6 登入
+- 首頁登入框輸入 **`123`** → 直接進**紅色介面**（`main.js` 的 login submit）。其他名字維持原本問候。
+
+### 0.7 這一輪的地雷 / 注意
+- **預覽窗格（mcp Browser）rAF 凍結、不合成**：看不到任何「動」（旋轉、閃爍、倒數、CSS transition）。全程只能**用 JS 讀數值驗證**，視覺要**使用者親眼看**。這是反覆卡住的主因。
+- **編輯模式會刪掉 `layout*.json`**（server 有 DELETE）：commit 前常發現它們被刪成 `D`，要 `git checkout -- layout.json layout-home.json` 還原再推。**layout 檔已改成進版控**（`.gitignore` 拿掉那幾行），這樣調好的視角才會跟著部署。
+- **`.claude/launch.json` 是跨專案共用的**，會被別的 session 覆蓋掉。dev server（`preview_start name:"fire-golden-30s"`）起不來時，把 fire-golden-30s 的設定加回 configurations（node `.../fire-golden-30s/server.mjs 5280`，port 5280），不要動別人的。
+- 紅色頁面現在是登入目標，但**內容仍是空白骨架**；綠色頁面也還是骨架。
+
+---
+
 ## 1. 專案是什麼
 
 **火災黃金30秒** — 給展場／看板用的 Three.js 網頁，全螢幕、鍵盤操作、無捲軸。
@@ -34,7 +81,10 @@
 
 1. 歡迎面板的框改成「跟第一頁階段卡亮起時同一套發光」（細框 + 亮藍漸層 + `drop-shadow`）
 2. 全站粗體字調細（`900` → `700`，第一頁小標 → `600`）
-3. **已推上 GitHub**：<https://github.com/qifenwei03-del/fire-golden-30s>（**private**、分支 `main`）
+3. **已推上 GitHub**：<https://github.com/qifenwei03-del/fire-golden-30s>（分支 `main`；**現在是 PUBLIC，且已上 GitHub Pages — 見上面第 0 節**）
+
+> 註：以下第 1～ 節是「上一輪（純佔位模型時期）」寫的，色彩／面板決策仍然有效；
+> 但 3D 模型與逃生動線的最新狀態以**第 0 節**為準。
 
 > ⚠️ 最後一輪的**視覺驗證不完整**。開發伺服器一直被系統回收、headless 截圖連不上，
 > 字重和面板框是直接讀 computed style 確認數值正確，但沒有親眼看過最終畫面。
