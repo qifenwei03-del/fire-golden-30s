@@ -181,19 +181,33 @@
       <div class="stage home__stage" id="stage-home" data-obj="homeStage" data-label="3D 模型區">
         <div class="stage__label">CLOUD RESIDENCE / 智慧安全系統</div>
         <div class="stage__loading" id="home-loading" hidden>載入模型中 <span id="home-progress">0%</span></div>
+        <!-- 切狀態時只把「模型」黑掉，版面上的字和按鈕留著 -->
+        <div class="blackout" id="blackout" aria-hidden="true"></div>
       </div>
 
-      <form class="home__panel chamfer" id="login-form" autocomplete="off" data-obj="homePanel" data-label="歡迎彈窗">
-        <h2 class="home__welcome">歡迎</h2>
-        <p class="home__lead" id="login-lead">
-          歡迎使用雲端宅邸管理系統<br>請輸入住戶名稱進行登入
-        </p>
-        <label class="home__field">
-          <span class="sr-only">住戶名稱</span>
-          <input id="login-name" type="text" placeholder="請輸入名稱" maxlength="20" autocomplete="off" spellcheck="false">
-        </label>
-        <button class="home__submit" id="login-submit" type="submit">登入</button>
-      </form>
+      <!-- 逃生動線示範：取代原本的歡迎／登入面板。
+           兩顆按鈕都會「介面轉紅 → 隨機跑一條動線 → 抵達出口轉綠 + 恭喜通關」。 -->
+      <div class="home__route">
+        <button class="home__route-btn chamfer" type="button" id="route-play"
+                data-obj="homeRoutePlay" data-label="展示逃生動線">
+          <span class="home__route-ico">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10.2 8.4 16 12l-5.8 3.6Z"/></svg>
+          </span>
+          <span class="home__route-label"><b>展示逃生動線</b><i>ROUTE DEMO</i></span>
+        </button>
+        <button class="home__route-btn chamfer" type="button" id="route-next"
+                data-obj="homeRouteNext" data-label="切換逃生動線">
+          <span class="home__route-ico">
+            <svg viewBox="0 0 24 24"><path d="M3 7.5h4.2l9.3 9h4"/><path d="M17.6 13.2 20.9 16.5 17.6 19.8"/><path d="M3 16.5h4.2l2.3-2.2"/><path d="M14.2 9.3h6.3"/><path d="M17.6 6 20.9 9.3"/></svg>
+          </span>
+          <span class="home__route-label"><b>切換逃生動線</b><i>SWITCH ROUTE</i></span>
+        </button>
+      </div>
+
+      <!-- 抵達綠色出口後跳出來的通關訊息（蓋在整頁上，不吃滑鼠） -->
+      <div class="home__clear" id="route-clear" aria-live="polite">
+        <p class="home__clear-box chamfer"><b>恭喜通關</b><i>SAFELY EVACUATED</i></p>
+      </div>
 
       <footer class="home__foot">
         <ul class="home__acts">
@@ -230,31 +244,6 @@
       </footer>
     </div>
   </section>
-
-  <!-- ============================================================
-       PAGE 3 — 綠色介面 (0)
-       ============================================================ -->
-  <section class="page page--blank page--green" data-page="green">
-    <div class="blank">
-      <span class="blank__key">0</span>
-      <h2 class="blank__zh">綠色介面</h2>
-      <p class="blank__en">GREEN MODE</p>
-      <p class="blank__note">待製作 · CONTENT PENDING</p>
-    </div>
-  </section>
-
-  <!-- ============================================================
-       PAGE 4 — 紅色介面 (1)
-       ============================================================ -->
-  <section class="page page--blank page--red" data-page="red">
-    <div class="blank">
-      <span class="blank__key">1</span>
-      <h2 class="blank__zh">紅色介面</h2>
-      <p class="blank__en">RED MODE</p>
-      <p class="blank__note">待製作 · CONTENT PENDING</p>
-    </div>
-  </section>
-
 
 </div>
 

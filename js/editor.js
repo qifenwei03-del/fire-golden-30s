@@ -27,6 +27,8 @@ const PAGE_BTNS = [
   ['pageX', '整組移到畫面水平正中', '<rect x="7.2" y="0" width="1.6" height="16" rx=".6" opacity=".45"/><rect x="3.2" y="4.6" width="9.6" height="6.8" rx=".9"/>'],
   ['pageY', '整組移到畫面垂直正中', '<rect x="0" y="7.2" width="16" height="1.6" rx=".6" opacity=".45"/><rect x="4.6" y="3.2" width="6.8" height="9.6" rx=".9"/>'],
 ];
+/* 擺動去程繞哪一邊的顯示名稱 */
+const SWING_DIR_LABEL = { auto: '最短', cw: '順時針', ccw: '逆時針' };
 const SNAP = 6;      // 對齊吸附距離（px）
 const MIN = 16;      // 最小框（px）
 const SCALE_RANGE = [0.2, 6];
@@ -40,6 +42,9 @@ export function createEditor({
   guideStore,                    // 跨頁共用的參考線（js/guides.js），沒給就每頁自己一份
   viewer = null,                 // 給了就能在編輯模式裡調整並記住 3D 視角
   sceneName = 'flat',            // 這一頁用的 3D 場景代號
+  shotKeys = [],                 // 這一頁要能設定哪些分鏡的鏡頭：[[代號, 顯示名], …]，空的就不顯示那一組
+  shotSeconds = 5,               // 一條動線跑幾秒（時間軸的總長）。可以給函式 (動線索引) => 秒，每條不同
+  onState = null,                // 切換狀態時通知外面（配色、建物外觀之類的由呼叫端決定）
   storageKey = 'fire30.layout',
   layoutUrl = './layout.json',   // 開發伺服器支援 PUT／DELETE；純靜態主機會失敗，退回 localStorage
 } = {}) {
@@ -54,6 +59,7 @@ export function createEditor({
   let dirty = false;        // 使用者動過版面沒？沒動過的話視窗一改變就重量
 
   let layer = null, bar = null, fields = null, snapLine = null, toast = null, guideBox = null;
+  let barClick = null;      // 工具列的點擊委派，時間軸那塊也共用同一支
   const boxes = new Map();  // el -> .eo-box
   const sel = new Set();
   const undoStack = [];
@@ -579,9 +585,20 @@ export function createEditor({
       ${viewer ? `<button data-a="viewEdit" title="開啟後：左鍵拖曳轉角度、右鍵拖曳平移、滾輪縮放；放開就記住">調整模型</button>
       <button data-a="viewPivot" title="開啟後拖曳畫面平移「旋轉軸心」（黃色軸線），放開就記住">調整軸心</button>
       <button data-a="viewSpin" title="模型要不要自己慢慢轉整圈">自動旋轉</button>
-      <button data-a="viewSwing" title="開啟後模型在目前角度 ± 擺幅之間來回擺動，不轉整圈">來回擺動</button>
-      <label class="eo-bar__speed" title="自動旋轉速度（往左為反向、中間為停）；擺動時是快慢">速度<input data-f="spin" type="range" min="-2" max="2" step="0.05" style="width:70px;vertical-align:middle" disabled></label>
-      <label class="eo-bar__speed" title="來回擺動的幅度（左右各幾度）">擺幅<input data-f="swingAmp" type="range" min="5" max="90" step="1" style="width:70px;vertical-align:middle" disabled></label>
+      <button data-a="viewSwing" title="開啟後模型來回擺動，不轉整圈。沒鎖 A/B 時是「目前角度 ± 擺幅」，鎖了就在 A、B 兩個視角之間來回">來回擺動</button>
+      <label class="eo-bar__speed" title="轉／擺的快慢。刻度是非線性的（越靠中間越細），中間＝停、往左為反向。旁邊顯示的是實際週期">速度<input data-f="spin" type="range" min="-1" max="1" step="0.005" style="width:84px;vertical-align:middle" disabled><i data-f="spinOut" class="eo-bar__val">—</i></label>
+      <label class="eo-bar__speed" title="來回擺動的幅度（左右各幾度）。鎖定 A/B 之後就用不到了">擺幅<input data-f="swingAmp" type="range" min="5" max="90" step="1" style="width:70px;vertical-align:middle" disabled></label>
+      <button data-a="swingA" title="把目前鏡頭記成擺動的起點 A（Shift+點擊＝鏡頭跳過去看 A 在哪）">設 A</button>
+      <button data-a="swingB" title="把目前鏡頭記成擺動的終點 B（Shift+點擊＝鏡頭跳過去看 B 在哪）">設 B</button>
+      <button data-a="swingClear" title="清掉 A / B，擺動回到「目前角度 ± 擺幅」">清除 AB</button>
+      <button data-a="swingDir" title="鎖了 A/B 之後，去程要繞哪一邊。最短＝自動挑近的那邊；順／逆是由上往下看的方向。轉向跟預期相反就切另一個">擺向 最短</button>
+      ${shotKeys.length ? `<span class="eo-bar__sep"></span>
+      <label class="eo-bar__speed" title="要編輯哪一個狀態的視角。切過去畫面就會變成那個狀態（含自動旋轉／擺動），左邊那排控制項都是在調它。設過的會有 ●">狀態<select data-f="shot">${
+        shotKeys.map(([k, label]) => `<option value="${k}">${label}</option>`).join('')
+      }</select></label>
+      <button data-a="shotSet" title="把目前的鏡頭和運鏡（自動旋轉／擺動／速度／A B）存成這個狀態的設定">設定</button>
+      <button data-a="shotGo" title="把畫面切成這個狀態存好的樣子">預覽</button>
+      <button data-a="shotClear" title="清掉這個狀態的設定（待機＝視角回場景預設；其他＝該狀態不再動鏡頭）">清除</button>` : ''}
       <button data-a="viewReset" title="視角回到預設">重設視角</button>
       <span class="eo-bar__sep"></span>` : ''}
       <button data-a="hide">隱藏</button>
@@ -612,12 +629,24 @@ export function createEditor({
     // 旋轉速度滑桿：拖動即時套用，放開才存檔（避免每格都寫一次檔）
     if (viewer && fields.spin) {
       fields.spin.disabled = false;
-      fields.spin.addEventListener('input', () => viewer.setAutoRotateSpeed(parseFloat(fields.spin.value)));
+      fields.spin.addEventListener('input', () => {
+        viewer.setAutoRotateSpeed(sliderToSpin(parseFloat(fields.spin.value)));
+        if (fields.spinOut) fields.spinOut.textContent = spinText(viewer.getView());
+      });
       fields.spin.addEventListener('change', () => {
         rememberView();
-        say(`旋轉速度 ${(+fields.spin.value).toFixed(2)}`);
+        say(`速度 ${viewer.getView().speed}（${spinText(viewer.getView())}）`);
       });
     }
+
+    // 換狀態：畫面直接切成那個狀態的樣子，再決定時間軸要不要出現
+    fields.shot?.addEventListener('change', () => {
+      scrubT = 0;
+      applyState(shotKey());
+      syncTrack();
+      syncBar();
+      say(`正在編輯「${shotLabel()}」`);
+    });
 
     // 擺幅滑桿
     if (viewer && fields.swingAmp) {
@@ -629,7 +658,8 @@ export function createEditor({
       });
     }
 
-    bar.addEventListener('click', (e) => {
+    // 時間軸是另一塊 DOM（不在 bar 裡面），所以handler 要能共用
+    barClick = (e) => {
       const btn = e.target.closest?.('[data-a]');
       const a = btn?.dataset.a;
       if (!a) return;
@@ -657,7 +687,85 @@ export function createEditor({
           const v = viewer.getView();
           viewer.setSwing(!v.swing);
           rememberView();
-          say(v.swing ? '來回擺動：關' : `來回擺動：開（±${Math.round(v.swingAmp)}°）`);
+          if (v.swing) say('來回擺動：關');
+          else say(viewer.hasSwingRange() ? '來回擺動：開（鎖定 A ↔ B）' : `來回擺動：開（±${Math.round(v.swingAmp)}°）`);
+        },
+        // 鎖定擺動的兩端：點一下＝把目前鏡頭記成該端，Shift+點＝鏡頭跳過去確認位置
+        swingA: (e) => setSwingEnd('a', e.shiftKey),
+        swingB: (e) => setSwingEnd('b', e.shiftKey),
+        swingDir: () => {
+          if (!viewer) return;
+          const order = ['auto', 'cw', 'ccw'];
+          const now = viewer.getView().swingDir ?? 'auto';
+          const next = order[(order.indexOf(now) + 1) % order.length];
+          pushUndo();
+          viewer.setSwingDir(next);
+          rememberView();
+          say(`擺動去程：${SWING_DIR_LABEL[next]}`);
+        },
+        swingClear: () => {
+          if (!viewer) return;
+          pushUndo();
+          viewer.clearSwingRange();
+          rememberView();
+          say('已清除 A / B，擺動回到「目前角度 ± 擺幅」');
+        },
+        // 分鏡：每條動線／通關各自的鏡頭
+        shotSet: () => {
+          if (!viewer) return;
+          pushUndo();
+          rememberView();                     // 依目前選到的狀態存到對的地方
+          renderTrackKeys();
+          say(`已存成「${shotLabel()}」的視角（含自動旋轉／擺動）`);
+        },
+        shotGo: () => {
+          if (!viewer) return;
+          if (shotKey() !== 'idle' && !viewer.getShot(shotKey())) return say(`「${shotLabel()}」還沒設過`);
+          applyState(shotKey());
+          say(`已切到「${shotLabel()}」的樣子`);
+        },
+        shotClear: () => {
+          if (!viewer) return;
+          pushUndo();
+          if (shotKey() === 'idle') {
+            viewer.clearView(sceneName);      // 待機視角＝回到場景預設
+            save(); syncBar();
+            return say('待機視角已回到預設');
+          }
+          const ok = viewer.clearShot(shotKey());
+          rememberView();
+          renderTrackKeys();
+          say(ok ? `已清除「${shotLabel()}」` : `「${shotLabel()}」本來就沒設`);
+        },
+        // 時間軸：在目前進度放一個鏡頭 / 刪掉最近的一個 / 從頭跑一次
+        keyAdd: () => {
+          pushUndo();
+          viewer.setShotKey(shotKey(), scrubT);
+          rememberView();
+          renderTrackKeys();
+          const n = viewer.shotKeys(shotKey())?.length ?? 0;
+          say(`已在 ${(scrubT * trackSeconds()).toFixed(2)}s 設鏡頭（這條共 ${n} 個點）`);
+        },
+        keyDel: () => {
+          const keys = viewer.shotKeys(shotKey());
+          if (!keys?.length) return say('這條還沒有鏡頭點');
+          let near = 0;
+          keys.forEach((k, i) => { if (Math.abs(k.t - scrubT) < Math.abs(keys[near].t - scrubT)) near = i; });
+          pushUndo();
+          viewer.removeShotKey(shotKey(), near);
+          rememberView();
+          renderTrackKeys();
+          say(`已刪除 ${(keys[near].t * trackSeconds()).toFixed(2)}s 那個鏡頭點`);
+        },
+        keyPlay: () => {
+          viewer.playRoute(sceneName, {
+            index: routeIndex(shotKey()),
+            duration: trackSeconds(),
+            shot: shotKey(),
+            shotBlend: 0.25,
+            onDone: () => { if (track) setScrub(scrubT); },   // 跑完回到時間軸上的位置
+          });
+          say(`預覽「${shotLabel()}」，${trackSeconds().toFixed(1)} 秒`);
         },
         viewReset: () => {
           if (!viewer) return;
@@ -667,9 +775,10 @@ export function createEditor({
           say('視角已回到預設');
         },
       };
-      if (actions[a]) actions[a]();
+      if (actions[a]) actions[a](e);
       else if (ALIGN_BTNS.some(([k]) => k === a)) align(a);
-    });
+    };
+    bar.addEventListener('click', barClick);
 
     // 掛在 #app 內（而不是 body）：被 #app 的 overflow:hidden 收住，
     // 不會有機會撐出視窗捲軸而改變 vw/vh → rem
@@ -712,9 +821,41 @@ export function createEditor({
       bar.querySelector('[data-a="viewPivot"]')?.classList.toggle('is-on', pivotEdit);
       bar.querySelector('[data-a="viewSpin"]')?.classList.toggle('is-on', v.autoRotate);
       bar.querySelector('[data-a="viewSwing"]')?.classList.toggle('is-on', v.swing);
+      // 擺動鎖定的兩端：設過的那一顆亮起；兩端都有就用不到「擺幅」了
+      const locked = viewer.hasSwingRange();
+      bar.querySelector('[data-a="swingA"]')?.classList.toggle('is-on', !!v.swingA);
+      bar.querySelector('[data-a="swingB"]')?.classList.toggle('is-on', !!v.swingB);
+      const dirBtn = bar.querySelector('[data-a="swingDir"]');
+      if (dirBtn) {
+        const d = v.swingDir ?? 'auto';
+        dirBtn.textContent = `擺向 ${SWING_DIR_LABEL[d]}`;
+        dirBtn.classList.toggle('is-on', d !== 'auto');
+        dirBtn.disabled = !locked;            // 沒鎖 A/B 的話擺動本來就對稱，方向沒意義
+      }
+      const clr = bar.querySelector('[data-a="swingClear"]');
+      if (clr) clr.disabled = !v.swingA && !v.swingB;
       // 不要在使用者正拖滑桿時覆蓋它的值
-      if (fields.spin && document.activeElement !== fields.spin) fields.spin.value = v.speed ?? 0.45;
-      if (fields.swingAmp && document.activeElement !== fields.swingAmp) fields.swingAmp.value = v.swingAmp ?? 40;
+      if (fields.spin && document.activeElement !== fields.spin) fields.spin.value = spinToSlider(v.speed ?? 0.45);
+      if (fields.spinOut) fields.spinOut.textContent = spinText(v);
+      if (fields.swingAmp) {
+        fields.swingAmp.disabled = locked;
+        if (document.activeElement !== fields.swingAmp) fields.swingAmp.value = v.swingAmp ?? 40;
+      }
+      // 狀態：設過的在選單裡標 ●，沒設過的「預覽 / 清除」停用（待機一定有，所以永遠可按）
+      if (fields.shot) {
+        const shots = viewer.listShots();
+        const isSet = (key) => (key === 'idle' ? !!viewer.getSavedView(sceneName)
+          : !!(shots[key]?.keys?.length || shots[key]?.motion));
+        for (const opt of fields.shot.options) {
+          const label = shotKeys.find(([k]) => k === opt.value)?.[1] ?? opt.value;
+          opt.textContent = isSet(opt.value) ? `${label} ●` : label;
+        }
+        const has = fields.shot.value === 'idle' || isSet(fields.shot.value);
+        const go = bar.querySelector('[data-a="shotGo"]');
+        const clr2 = bar.querySelector('[data-a="shotClear"]');
+        if (go) go.disabled = !has;
+        if (clr2) clr2.disabled = !has;
+      }
       const rst = bar.querySelector('[data-a="viewReset"]');
       if (rst) rst.disabled = !viewer.getSavedView(sceneName);
     }
@@ -743,6 +884,8 @@ export function createEditor({
     root.classList.toggle('is-model-edit', on);
     viewer?.setInteractionMode(pivotEdit ? 'pivot' : 'orbit');
     viewer?.showPivot(on);      // 編輯視角時都顯示軸心線（右鍵平移會移動它）
+    // 調整視角或開著時間軸的期間，不要邊拖邊被自動旋轉／擺動拉走（不影響存檔的開關）
+    viewer?.pauseMotion(on || !!track);
   }
 
   /** 調整模型：拖曳轉角度、滾輪縮放 */
@@ -765,12 +908,194 @@ export function createEditor({
     syncBar();
   }
 
-  /** 把目前的視角記成固定視角並存檔 */
+  /** 工具列上「鏡頭」下拉選到的分鏡 */
+  /* 速度滑桿是**非線性**的：位置 x（-1~1）平方後才是速度，慢速那端才有足夠的解析度
+     （線性刻度下 0~0.3 這段只佔幾個像素，根本調不準） */
+  const SPIN_MAX = 2;
+  const sliderToSpin = (x) => (x < 0 ? -1 : 1) * x * x * SPIN_MAX;
+  const spinToSlider = (s) => {
+    const v = Math.sqrt(Math.min(SPIN_MAX, Math.abs(s || 0)) / SPIN_MAX);
+    return (s < 0 ? -v : v).toFixed(3);
+  };
+  /** 滑桿旁邊那行字：換算成看得懂的週期 */
+  const spinText = (v) => {
+    const s = Math.abs(v.speed ?? 0);
+    if (s < 0.005) return '停';
+    if (v.swing) return `${((Math.PI * 2) / (0.9 * s)).toFixed(1)}s/趟`;   // 擺動：來回一趟幾秒
+    return `${(60 / s).toFixed(0)}s/圈`;                                   // 自轉：轉一圈幾秒
+  };
+
+  const shotKey = () => fields?.shot?.value ?? shotKeys[0]?.[0] ?? '';
+  const shotLabel = () => (shotKeys.find(([k]) => k === shotKey())?.[1]) ?? shotKey();
+
+  /* ---------------------------------------------------------
+     動線時間軸：選到「動線N」時出現，可以沿著行徑進度放好幾個鏡頭
+     --------------------------------------------------------- */
+  let track = null, trackLane = null, trackFill = null, trackHead = null, trackTime = null, trackName = null;
+  let scrubT = 0;                                   // 目前在動線上的進度 0~1
+
+  const isRouteShot = (k) => /^route\d+$/.test(k);
+  const routeIndex = (k) => parseInt(k.slice(5), 10) - 1;
+  /** 目前這條動線的總秒數（外面給的 shotSeconds 可以是函式，每條長度不同秒數也不同） */
+  const trackSeconds = () => {
+    const s = typeof shotSeconds === 'function' ? shotSeconds(routeIndex(shotKey())) : shotSeconds;
+    return s > 0 ? s : 5;
+  };
+
+  function buildTrack() {
+    track = document.createElement('div');
+    track.className = 'eo-track';
+    track.innerHTML = `
+      <span class="eo-track__name">動線</span>
+      <div class="eo-track__lane" title="拖曳＝沿著動線移動時間；菱形是已設好的鏡頭，可以拖曳改時間、雙擊刪除">
+        <i class="eo-track__fill"></i><i class="eo-track__head"></i>
+      </div>
+      <span class="eo-track__time">0.00s</span>
+      <button data-a="keyAdd" title="把目前鏡頭記在這個時間點（同一點會覆蓋）">在此設鏡頭</button>
+      <button data-a="keyDel" title="刪掉離目前時間最近的那個鏡頭點">刪除這點</button>
+      <button data-a="keyPlay" title="從頭把這條動線和運鏡跑一次">預覽</button>`;
+    trackLane = track.querySelector('.eo-track__lane');
+    trackFill = track.querySelector('.eo-track__fill');
+    trackHead = track.querySelector('.eo-track__head');
+    trackTime = track.querySelector('.eo-track__time');
+    trackName = track.querySelector('.eo-track__name');
+
+    const atLane = (ev) => {
+      const r = trackLane.getBoundingClientRect();
+      return Math.max(0, Math.min(1, (ev.clientX - r.left) / (r.width || 1)));
+    };
+
+    trackLane.addEventListener('pointerdown', (e) => {
+      const keyEl = e.target.closest?.('.eo-track__key');
+      // 抓不到指標就算了（某些情境會丟例外），不能讓它擋掉後面的拖曳
+      try { trackLane.setPointerCapture(e.pointerId); } catch { /* 沒關係 */ }
+      if (keyEl) {                                   // 拖菱形＝改那個鏡頭的時間
+        const i = +keyEl.dataset.i;
+        pushUndo();
+        const move = (ev) => { viewer.moveShotKey(shotKey(), i, atLane(ev)); renderTrackKeys(); };
+        const up = (ev) => {
+          trackLane.removeEventListener('pointermove', move);
+          trackLane.removeEventListener('pointerup', up);
+          rememberView();
+          setScrub(atLane(ev));
+          say('已移動這個鏡頭點的時間');
+        };
+        trackLane.addEventListener('pointermove', move);
+        trackLane.addEventListener('pointerup', up);
+        return;
+      }
+      const move = (ev) => setScrub(atLane(ev));      // 拖空白處＝移動時間
+      const up = () => {
+        trackLane.removeEventListener('pointermove', move);
+        trackLane.removeEventListener('pointerup', up);
+      };
+      trackLane.addEventListener('pointermove', move);
+      trackLane.addEventListener('pointerup', up);
+      setScrub(atLane(e));
+    });
+
+    trackLane.addEventListener('dblclick', (e) => {   // 雙擊菱形＝刪掉
+      const keyEl = e.target.closest?.('.eo-track__key');
+      if (!keyEl) return;
+      pushUndo();
+      viewer.removeShotKey(shotKey(), +keyEl.dataset.i);
+      rememberView();
+      renderTrackKeys();
+      say('已刪除這個鏡頭點');
+    });
+
+    track.addEventListener('click', (e) => barClick?.(e));   // 按鈕沿用工具列那支點擊委派
+    // 掛在工具列同一層（#app），is-timeline 也要下在那一層，`.eo-toast` 才吃得到讓位規則
+    const host = root.parentElement ?? root;
+    host.appendChild(track);
+    host.classList.add('is-timeline');
+  }
+
+  function destroyTrack() {
+    track?.remove();
+    track = trackLane = trackFill = trackHead = trackTime = trackName = null;
+    (root.parentElement ?? root).classList.remove('is-timeline');
+    viewer?.stopRoute(sceneName);                    // 收掉預覽用的那條動線
+  }
+
+  /** 重畫時間軸上的菱形 */
+  function renderTrackKeys() {
+    if (!track) return;
+    for (const el of trackLane.querySelectorAll('.eo-track__key')) el.remove();
+    const keys = viewer?.shotKeys(shotKey()) ?? [];
+    keys.forEach((k, i) => {
+      const el = document.createElement('i');
+      el.className = 'eo-track__key';
+      el.dataset.i = String(i);
+      el.style.left = `${k.t * 100}%`;
+      el.title = `${(k.t * trackSeconds()).toFixed(2)}s（拖曳改時間、雙擊刪除）`;
+      trackLane.appendChild(el);
+    });
+    const del = track.querySelector('[data-a="keyDel"]');
+    if (del) del.disabled = !keys.length;
+  }
+
+  /** 把動線畫到 t，並讓鏡頭走到該時間點的運鏡上 */
+  function setScrub(t) {
+    scrubT = Math.max(0, Math.min(1, t));
+    if (!track) return;
+    trackHead.style.left = `${scrubT * 100}%`;
+    trackFill.style.width = `${scrubT * 100}%`;
+    trackTime.textContent = `${(scrubT * trackSeconds()).toFixed(2)}s`;
+    viewer?.previewRouteAt(sceneName, routeIndex(shotKey()), scrubT, shotKey());
+  }
+
+  /** 下拉換了 / 進出編輯模式時，決定要不要顯示時間軸 */
+  function syncTrack() {
+    if (!viewer || !shotKeys.length) return;
+    const want = isRouteShot(shotKey());
+    if (want && !track) buildTrack();
+    else if (!want && track) destroyTrack();
+    if (track) {
+      trackName.textContent = shotLabel();
+      renderTrackKeys();
+      setScrub(scrubT);
+    }
+    applyViewInteraction();                          // 時間軸開著時要暫停運鏡
+  }
+
+  /** 記下擺動的一端（jump=true 改成把鏡頭跳過去看那一端在哪） */
+  function setSwingEnd(which, jump) {
+    if (!viewer) return;
+    const label = which === 'b' ? 'B' : 'A';
+    if (jump) {
+      if (!viewer.gotoSwingEnd(which)) return say(`還沒設過 ${label}`);
+      rememberView();
+      return say(`鏡頭跳到 ${label}（擺動已暫停，要再開請按「來回擺動」）`);
+    }
+    pushUndo();
+    const both = viewer.setSwingEnd(which);
+    rememberView();
+    say(both ? `已設 ${label}：擺動鎖定在 A ↔ B 之間` : `已設 ${label}，再設另一端才會鎖定`);
+  }
+
+  /** 把目前的視角／運鏡記進「正在編輯的那個狀態」並存檔。
+     待機（藍）→ 該頁的固定視角；通關（綠）→ 存成 clear 分鏡（連自動旋轉等狀態一起）；
+     動線（紅）→ 鏡頭要用時間軸的「在此設鏡頭」，這裡只負責寫檔，不動待機視角。 */
   function rememberView() {
     if (!viewer) return;
-    viewer.saveView(sceneName);
+    const k = shotKeys.length ? shotKey() : 'idle';
+    if (k === 'idle') viewer.saveView(sceneName);
+    else if (isRouteShot(k)) viewer.setShotMotion(k);   // 動線：只更新運鏡，關鍵影格交給時間軸
+    else viewer.setShot(k);                            // 通關等單點狀態：鏡頭 + 運鏡一起
     dirty = true;
     save(); syncBar();
+  }
+
+  /** 切到某個狀態：把畫面變成那個狀態的樣子（鏡頭 + 運鏡），這樣工具列調的就是它 */
+  function applyState(k) {
+    onState?.(k);                                      // 先讓外面換配色／外觀
+    if (!viewer) return;
+    if (k === 'idle') { viewer.setScene(sceneName); return; }   // 重新套待機視角
+    if (isRouteShot(k)) { const rm = viewer.getShotMotion(k); if (rm) viewer.applyMotion(rm); return; }
+    if (!viewer.gotoShotAt(k, 0)) return;                       // 沒設過就不動鏡頭
+    const m = viewer.getShot(k)?.motion;
+    if (m) viewer.applyMotion(m);
   }
 
   if (viewer) {
@@ -981,6 +1306,7 @@ export function createEditor({
       root.classList.add('is-editing');
       buildLayer();
       buildBar();
+      syncTrack();
       syncBar();
       say('編輯模式：拖曳移動，四角等比縮放');
     } else {
@@ -988,8 +1314,11 @@ export function createEditor({
       pivotEdit = false;
       viewer?.setInteractionMode('kiosk');   // 離開編輯就鎖回展示狀態：只能轉、不能平移
       viewer?.showPivot(false);
+      viewer?.pauseMotion(false);            // 運鏡恢復
       root.classList.remove('is-editing', 'is-model-edit');
       clearTimeout(toastTimer);
+      onState?.('idle');           // 離開編輯模式：配色／外觀回到待機
+      destroyTrack();
       layer?.remove(); bar?.remove(); toast?.remove();
       layer = bar = toast = snapLine = guideBox = null;
       boxes.clear(); sel.clear();

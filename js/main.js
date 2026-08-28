@@ -5,9 +5,22 @@ import { createGuideStore } from './guides.js';
 
 /* =========================================================
    頁面路由
-   ENTER → 首頁 / 0 → 綠色介面 / 1 → 紅色介面 / ESC → 第一頁
+   ENTER → 首頁 / ESC → 第一頁
+   （原本按 0 / 1 的綠色、紅色空白頁已經拿掉）
    ========================================================= */
-const PAGES = ['first', 'home', 'green', 'red'];
+const PAGES = ['first', 'home'];
+
+/* 首頁逃生動線示範的節奏常數（editors 也用得到，所以放最上面） */
+/* 動線的節奏：**動線上的點照路徑長度等速跑**（秒數 = 長度 ÷ ROUTE_SPEED）。
+   鏡頭不跟著點跑，而是「在每個關鍵影格停 CAM_HOLD 秒、中間再滑過去」，
+   所以鏡頭和點不會完全對齊 —— 這是刻意的。 */
+const ROUTE_SPEED = 6.4;                    // 點每秒走幾個模型單位（越小走越慢）
+const CAM_HOLD = 0.25;                      // 鏡頭在每個關鍵影格停幾秒（0 = 不停，一路滑過去）
+const ROUTE_SECONDS = [3, 12];              // 每條的秒數上下限
+const ROUTE_RUN = 5;                        // 量不到長度時的後備秒數
+const SHOT_FLY = 0;                         // 狀態切換不用鏡頭飛過去銜接（改用黑幕），0 = 直接就定位
+/* 通關（綠）預設的運鏡：自己慢慢轉。編輯模式把「通關（綠）」存過之後就以存的為準 */
+const GREEN_MOTION = { autoRotate: true, speed: 0.3, swing: false };
 
 /* 歡迎流程：開機停在「火災黃金30秒」，倒數跑完一輪自動進首頁。
    只會自動跳這一次，之後手動切頁就不再干涉。 */
@@ -64,6 +77,24 @@ const editors = {
     guideStore,
     viewer,
     sceneName: 'tower',
+    // 首頁的三個狀態各有自己的視角與運鏡，用工具列的「狀態」下拉切換要編輯哪一個：
+    //   待機（藍）＝沒在跑動線時；動線1~5（紅）＝跑該條動線時，用時間軸排運鏡；通關（綠）＝抵達出口後
+    shotKeys: [
+      ['idle', '待機（藍）'],
+      ['route1', '動線1'], ['route2', '動線2'], ['route3', '動線3'],
+      ['route4', '動線4'], ['route5', '動線5'],
+      ['clear', '通關（綠）'],
+    ],
+    shotSeconds: (i) => routeSeconds(viewer.routeLengths('tower')[i]),
+    // 編輯器切到哪個狀態，畫面就跟著變成那個狀態的配色與外觀（不然會在藍色底下調綠色的構圖）
+    onState: (k) => {
+      const route = /^route\d+$/.test(k);
+      viewer.setAllWhite(k === 'clear');
+      // 待機才有起火點（紅點 + 煙），編動線或通關時收掉，畫面才跟實際跑起來一樣
+      if (k === 'idle') viewer.showIdleFire('tower');
+      else viewer.hideIdleFire('tower');
+      setTheme(k === 'clear' ? 'green' : route ? 'red' : baseTheme);
+    },
     storageKey: 'fire30.layout.home',
     layoutUrl: './layout-home.json',
   }),
@@ -81,6 +112,8 @@ function goto(id) {
   for (const [key, el] of pageEls) el.classList.toggle('is-active', key === id);
 
   closeEditors(id);                // 換頁就關掉其他頁的編輯模式
+  if (id !== 'home') resetRouteDemo();   // 離開首頁：收掉動線、關掉通關訊息、主色回原本的
+  if (id === 'home') showIdleFire();     // 進首頁：待機的起火點
   if (id === 'first') countdown.start();
   else countdown.pause();
 
@@ -98,7 +131,7 @@ function goto(id) {
 addEventListener('keydown', (e) => {
   if (e.repeat) return;
 
-  // 正在輸入欄位裡打字時不要切頁（不然打 0 或 1 就跳走了），Esc 只負責離開欄位
+  // 正在輸入欄位裡打字時不要切頁（工具列有數字輸入框），Esc 只負責離開欄位
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
     if (e.code === 'Escape') { e.target.blur(); e.preventDefault(); }
     return;
@@ -107,8 +140,6 @@ addEventListener('keydown', (e) => {
   switch (e.code) {
     // 手動切過頁就取消自動進首頁，避免之後按 Esc 回來又被跳走
     case 'Enter': case 'NumpadEnter': welcomeDone = true; goto('home'); break;
-    case 'Digit0': case 'Numpad0':    welcomeDone = true; goto('green'); break;
-    case 'Digit1': case 'Numpad1':    welcomeDone = true; goto('red'); break;
     case 'Escape':                    welcomeDone = true; goto('first'); break;
     case 'KeyR':                      if (current === 'first') countdown.reset(); break;
     case 'KeyE':                      editors[current]?.toggle(); break;
@@ -118,56 +149,97 @@ addEventListener('keydown', (e) => {
 });
 
 /* =========================================================
-   首頁的住戶登入（目前只做輸入與問候，沒有真的驗證）
+   首頁的逃生動線示範（取代原本的住戶登入面板）
+   ---------------------------------------------------------
+   按「展示逃生動線」或「切換逃生動線」都是同一套流程：
+     介面轉紅 → 隨機挑一條動線，點**等速**從紅色起點畫到綠色出口（秒數 = 路徑長度 ÷ ROUTE_SPEED）
+       （設過運鏡的話，鏡頭會在每個關鍵影格停一下再滑到下一個，不強求和點對齊）
+     → 抵達出口：3D 黑一下 → 介面轉綠、整棟變白、鏡頭就定位、路線收掉、跳出「恭喜通關」
+   再按任何一顆就換一條重跑（避開剛剛那條）；離開首頁會回到原本的藍色。
    ========================================================= */
-const loginForm = document.getElementById('login-form');
-const loginName = document.getElementById('login-name');
-const loginLead = document.getElementById('login-lead');
-const loginSubmit = document.getElementById('login-submit');
-let loggedIn = false;
+const routeClear = document.getElementById('route-clear');
+const routeBtns = [document.getElementById('route-play'), document.getElementById('route-next')];
+let routeState = 'idle';                    // idle | running | cleared
 
-const setLead = (...nodes) => { loginLead.replaceChildren(...nodes); };
-const br = () => document.createElement('br');
+const showClear = (on) => routeClear?.classList.toggle('is-on', on);
 
-function resetLogin() {
-  loggedIn = false;
-  loginForm.classList.remove('is-empty');
-  loginName.value = '';
-  loginName.hidden = false;
-  loginSubmit.textContent = '登入';
-  setLead('歡迎使用雲端宅邸管理系統', br(), '請輸入住戶名稱進行登入');
+/* 黑幕：切狀態時先黑掉，趁看不見把鏡頭放到定位、配色換好，再亮起來。
+   FADE_OUT 要和 css `.blackout` 的 transition 對得上。 */
+const FADE_OUT = 220, FADE_HOLD = 60;
+const blackoutEl = document.getElementById('blackout');
+let fadeTimer = 0;
+
+function blackout(swap) {
+  clearTimeout(fadeTimer);
+  if (!blackoutEl) { swap(); return; }
+  blackoutEl.classList.add('is-on');
+  fadeTimer = setTimeout(() => {
+    swap();                                    // 這時候畫面全黑，換什麼都看不到
+    fadeTimer = setTimeout(() => blackoutEl.classList.remove('is-on'), FADE_HOLD);
+  }, FADE_OUT);
 }
 
-loginForm.addEventListener('submit', (e) => {
-  e.preventDefault();
-  if (loggedIn) { resetLogin(); loginName.focus(); return; }
+/** 這一條動線要跑幾秒＝路徑長度 ÷ 速度（夾在上下限之間），這樣點才會等速 */
+function routeSeconds(len) {
+  const s = len > 0 ? len / ROUTE_SPEED : ROUTE_RUN;
+  return Math.min(ROUTE_SECONDS[1], Math.max(ROUTE_SECONDS[0], s));
+}
 
-  const name = loginName.value.trim();
-  if (!name) {
-    loginForm.classList.remove('is-empty');
-    void loginForm.offsetWidth;            // 重新觸發抖動動畫
-    loginForm.classList.add('is-empty');
-    loginName.focus();
+/** 待機（藍）時在隨機一條動線的起點放紅色閃點 + 紅色煙霧（不畫路徑）。
+    每次回到待機都重抽一條，按下按鈕就跑那一條 —— 看到哪裡起火就從哪裡逃。 */
+function showIdleFire() {
+  if (routeState !== 'idle' || current !== 'home') return;
+  viewer.showIdleFire('tower');
+}
+
+function playRouteDemo() {
+  // 模型還沒載完就還沒有動線資料，直接不理會（別讓介面先變紅又變回來）
+  if (!viewer.routeCount('tower')) {
+    console.warn('[route] 首頁的逃生動線還沒載入完，稍等一下再按');
     return;
   }
+  const fromIdle = routeState === 'idle' ? viewer.idleFireRoute('tower') : -1;
+  blackout(() => {
+    showClear(false);
+    viewer.hideIdleFire('tower');           // 開始跑就把待機的起火點收掉
+    viewer.setAllWhite(false);                // 回到玻璃牆
+    setTheme('red');                          // 跑動線的這幾秒：整個介面轉紅
+    routeState = 'running';
+    viewer.playRoute('tower', {
+      duration: (i, len) => routeSeconds(len),  // 點等速：秒數只看路徑長度
+      index: fromIdle >= 0 ? fromIdle : null,   // 從待機按下去＝跑「正在冒煙」那一條
+      avoidCurrent: true,                     // 每次換一條（只有一條動線時就重播那條）
+      shot: (i) => `route${i + 1}`,           // 這條動線的運鏡（編輯模式的時間軸上設的）
+      shotBlend: SHOT_FLY,
+      camHold: CAM_HOLD,                      // 鏡頭在每個關鍵影格停一下再轉
+      onDone: () => {
+        routeState = 'cleared';
+        blackout(() => {                      // 動線 → 通關：黑掉再換，不要用鏡頭轉過去銜接
+          viewer.stopRoute('tower');          // 抵達出口 → 路線消失
+          viewer.setAllWhite(true);           // 整棟建物變白
+          // 通關（綠）：照這個狀態存的鏡頭／運鏡走；沒設過就用 GREEN_MOTION（原地慢慢轉）
+          viewer.enterState('clear', SHOT_FLY, { defaultMotion: GREEN_MOTION });
+          setTheme('green');                  // 介面轉綠
+          showClear(true);                    // 恭喜通關
+        });
+      },
+    });
+  });
+}
 
-  // 輸入 123 → 登入成功，連到紅色介面
-  if (name === '123') {
-    resetLogin();                          // 清空，回到首頁時是乾淨的登入框
-    goto('red');
-    return;
-  }
+/** 回到還沒開始的狀態（離開首頁時） */
+function resetRouteDemo() {
+  if (routeState === 'idle') return;
+  routeState = 'idle';
+  viewer.stopRoute('tower');
+  viewer.setAllWhite(false);                // 建物變回玻璃牆
+  viewer.releaseShot(SHOT_FLY);             // 鏡頭飛回原本的視角，擺動接手
+  showClear(false);
+  setTheme(baseTheme);
+  showIdleFire();                           // 重抽一個起火點
+}
 
-  loggedIn = true;
-  loginForm.classList.remove('is-empty');
-  loginName.hidden = true;
-  loginSubmit.textContent = '重新輸入';
-  // 用節點組字串，名稱不經過 innerHTML
-  setLead('歡迎回來，', Object.assign(document.createElement('b'), { textContent: name }),
-    br(), '已進入雲端宅邸管理系統');
-});
-
-loginName.addEventListener('input', () => loginForm.classList.remove('is-empty'));
+for (const btn of routeBtns) btn?.addEventListener('click', playRouteDemo);
 
 /* 點擊圓盤重新倒數 */
 document.querySelector('.timer__ring')?.addEventListener('click', () => countdown.reset());
@@ -226,7 +298,7 @@ if (params.get('home-model') !== 'off') {
     .loadHomeModel('./models/tower.glb', (pct) => {
       if (homeProgressEl) homeProgressEl.textContent = `${Math.round(pct)}%`;
     })
-    .then(() => { if (homeLoadingEl) homeLoadingEl.hidden = true; })
+    .then(() => { if (homeLoadingEl) homeLoadingEl.hidden = true; showIdleFire(); })
     .catch((err) => {
       console.error('[viewer] 首頁模型載入失敗，退回佔位大樓', err);
       if (homeLoadingEl) homeLoadingEl.hidden = true;
@@ -247,15 +319,16 @@ if (params.get('flat-model') !== 'off') {
 }
 
 /* =========================================================
-   主色調：blue（預設）/ green，3D 場景會跟著同一組 CSS 變數
+   主色調：blue（預設）/ green / red，3D 場景會跟著同一組 CSS 變數
    ?theme=green 可直接指定，否則沿用上次選擇
+   baseTheme = 使用者選的那一個；首頁跑動線時會暫時切成 red / green，離開首頁再切回來
    ========================================================= */
 function setTheme(name) {
   document.documentElement.dataset.theme = name;
   viewer.applyTheme();
   return name;
 }
-setTheme(params.get('theme') ?? localStorage.getItem('theme') ?? 'blue');
+let baseTheme = setTheme(params.get('theme') ?? localStorage.getItem('theme') ?? 'blue');
 
 /* 啟動（?page=home|green|red 可指定進入哪一頁，方便截圖／測試） */
 const startPage = params.get('page');
@@ -293,5 +366,5 @@ Object.assign(window, {
   __goto: goto,
   __editors: editors,
   __editor: editors.first,
-  __setTheme: (n) => { localStorage.setItem('theme', n); return setTheme(n); },
+  __setTheme: (n) => { localStorage.setItem('theme', n); baseTheme = n; return setTheme(n); },
 });

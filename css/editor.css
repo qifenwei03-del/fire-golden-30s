@@ -95,8 +95,6 @@
 /* 參考線跨頁共用，顏色代表是從哪一頁拉出來的 */
 .eo-gl{--gl:#25e6c0}                      /* 火災黃金30秒：青 */
 .eo-gl[data-page="home"]{--gl:#ff9b3d}    /* 首頁：橘 */
-.eo-gl[data-page="green"]{--gl:#8cff4d}   /* 綠色介面：黃綠 */
-.eo-gl[data-page="red"]{--gl:#ff4fa3}     /* 紅色介面：桃紅 */
 
 .eo-gl{position:absolute;background:var(--gl);pointer-events:auto}
 .eo-gl--v{top:0;bottom:0;width:1px;cursor:col-resize}
@@ -175,3 +173,65 @@
   opacity:0;transition:opacity .25s;pointer-events:none;
 }
 .eo-toast.is-show{opacity:1}
+
+/* ---------- 動線時間軸（編輯模式選到「動線N」時出現在工具列下面） ---------- */
+.eo-track{
+  position:absolute;left:50%;top:3.5rem;transform:translateX(-50%);z-index:60;
+  display:flex;align-items:center;gap:.55rem;
+  padding:.4rem .7rem;border-radius:.5rem;
+  background:rgba(6,14,24,.94);border:1px solid rgba(255,255,255,.14);
+  box-shadow:0 .6rem 2rem rgba(0,0,0,.55);
+  backdrop-filter:blur(8px);
+  font-family:"Noto Sans TC",sans-serif;font-size:.72rem;color:rgba(255,255,255,.72);
+  white-space:nowrap;
+}
+.eo-track__name{
+  padding:.2rem .5rem;border-radius:.25rem;
+  background:rgba(255,255,255,.1);color:#fff;font-weight:500;letter-spacing:.06em;
+}
+/* 軌道本身。高度做大一點（連 padding）比較好拖，視覺上的線靠 ::before 畫 */
+.eo-track__lane{
+  position:relative;width:26rem;height:1.5rem;cursor:ew-resize;touch-action:none;
+}
+.eo-track__lane::before{
+  content:"";position:absolute;left:0;right:0;top:50%;height:3px;margin-top:-1.5px;
+  border-radius:2px;background:rgba(255,255,255,.14);
+}
+.eo-track__fill{
+  position:absolute;left:0;top:50%;height:3px;margin-top:-1.5px;width:0;
+  border-radius:2px;background:color-mix(in srgb, var(--brand-hi) 55%, transparent);
+  pointer-events:none;
+}
+.eo-track__head{
+  position:absolute;top:50%;left:0;width:2px;height:1.1rem;margin:-.55rem 0 0 -1px;
+  background:var(--brand-hi);box-shadow:0 0 .4rem var(--brand-hi);
+  pointer-events:none;
+}
+/* 已設好的鏡頭點 */
+.eo-track__key{
+  position:absolute;top:50%;width:.6rem;height:.6rem;margin:-.3rem 0 0 -.3rem;
+  rotate:45deg;cursor:grab;
+  background:var(--brand-hi);border:1px solid rgba(4,18,31,.6);
+}
+.eo-track__key:hover{background:#fff;scale:1.25}
+.eo-track__time{
+  min-width:3.2rem;text-align:right;
+  font-family:"Oswald",sans-serif;color:#fff;
+}
+.eo-track button{
+  padding:.28rem .6rem;border-radius:.25rem;cursor:pointer;
+  border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.07);
+  color:rgba(255,255,255,.8);font-family:inherit;font-size:.7rem;letter-spacing:.04em;
+}
+.eo-track button:hover{background:rgba(255,255,255,.15);color:#fff}
+.eo-track button:disabled{opacity:.28;cursor:default;background:rgba(255,255,255,.04)}
+.eo-track button:disabled:hover{background:rgba(255,255,255,.04);color:rgba(255,255,255,.8)}
+
+/* 時間軸開著時，提示氣泡往下讓位，不要疊在軌道上 */
+.is-timeline .eo-toast{top:7rem}
+
+/* 速度滑桿旁邊的週期讀數（擺動＝來回一趟幾秒、自轉＝轉一圈幾秒） */
+.eo-bar__val{
+  min-width:3.6rem;display:inline-block;text-align:right;
+  font-family:"Oswald",sans-serif;font-style:normal;color:#fff;
+}
