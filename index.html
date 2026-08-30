@@ -119,7 +119,7 @@
       <aside class="col-side">
         <header class="side-head" data-obj="sideHead" data-label="右上標題">
           <h2>每一秒都很關鍵</h2>
-          <p>火勢與濃煙擴散極快<br>把握逃生時機</p>
+          <p data-obj="sideTag" data-label="右上小標">火勢與濃煙擴散極快<br>把握逃生時機</p>
         </header>
 
         <ol class="phases" id="phases">
@@ -185,6 +185,40 @@
         <div class="blackout" id="blackout" aria-hidden="true"></div>
       </div>
 
+      <!-- 右上角：標語 + 即時狀態面板（新增）。
+           文字都是暫定稿，直接改這裡；位置和大小到編輯模式（E）調。 -->
+      <div class="home__head" data-obj="homeTagline" data-label="右上標語">
+        <p class="home__tagline"><b>即時感知</b><em>×</em><b>動態判斷</b><em>×</em><b>智慧分流</b></p>
+        <p class="home__sub" data-obj="homeSub" data-label="右上小標">AI 預見風險，安全先行一步</p>
+      </div>
+
+      <ul class="home__status chamfer" data-obj="homeStatus" data-label="即時狀態面板">
+        <li class="home__status-item">
+          <span class="home__status-ico">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3"/></svg>
+          </span>
+          <b>火源位置</b><i id="status-fire" class="is-alert">已辨識</i>
+        </li>
+        <li class="home__status-item">
+          <span class="home__status-ico">
+            <svg viewBox="0 0 24 24"><path d="M8 16.4h8.4a3.5 3.5 0 0 0 .4-7A5.3 5.3 0 0 0 6.3 9.8 3.3 3.3 0 0 0 8 16.4Z"/><path d="M9 19.8c1-.7 2-.7 3 0s2 .7 3 0"/></svg>
+          </span>
+          <b>煙霧擴散</b><i class="is-ok">低風險</i>
+        </li>
+        <li class="home__status-item">
+          <span class="home__status-ico">
+            <svg viewBox="0 0 24 24"><path d="M13.5 4H6v16h7.5"/><path d="M10.5 12h8.2"/><path d="m15.8 9 3 3-3 3"/></svg>
+          </span>
+          <b>A出口</b><i id="status-exit-a" class="is-alert">壅塞</i>
+        </li>
+        <li class="home__status-item">
+          <span class="home__status-ico">
+            <svg viewBox="0 0 24 24"><path d="M10.5 4H18v16h-7.5"/><path d="M13.5 12H5.3"/><path d="m8.2 9-3 3 3 3"/></svg>
+          </span>
+          <b>B出口</b><i id="status-exit-b" class="is-ok">暢通</i>
+        </li>
+      </ul>
+
       <!-- 逃生動線示範：取代原本的歡迎／登入面板。
            兩顆按鈕都會「介面轉紅 → 隨機跑一條動線 → 抵達出口轉綠 + 恭喜通關」。 -->
       <div class="home__route">
@@ -194,6 +228,7 @@
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10.2 8.4 16 12l-5.8 3.6Z"/></svg>
           </span>
           <span class="home__route-label"><b>展示逃生動線</b><i>ROUTE DEMO</i></span>
+          <span class="home__route-noise" aria-hidden="true"></span>
         </button>
         <button class="home__route-btn chamfer" type="button" id="route-next"
                 data-obj="homeRouteNext" data-label="切換逃生動線">
@@ -201,6 +236,7 @@
             <svg viewBox="0 0 24 24"><path d="M3 7.5h4.2l9.3 9h4"/><path d="M17.6 13.2 20.9 16.5 17.6 19.8"/><path d="M3 16.5h4.2l2.3-2.2"/><path d="M14.2 9.3h6.3"/><path d="M17.6 6 20.9 9.3"/></svg>
           </span>
           <span class="home__route-label"><b>切換逃生動線</b><i>SWITCH ROUTE</i></span>
+          <span class="home__route-noise" aria-hidden="true"></span>
         </button>
       </div>
 

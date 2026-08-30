@@ -203,14 +203,16 @@ export function createEditor({
     const ok = load(data);
 
     // 防呆：存檔是在別的視窗尺寸／狀態下存的話，套用後物件會整片跑到畫面外。
-    // 與其讓使用者看到壞掉的版面又不知道怎麼救，不如直接丟掉回到自動排版。
+    // 這時候「這一次」回到自動排版，畫面至少是可用的。
+    // ⚠️ **絕對不要順手把存檔刪掉**：視窗常常只是暫時比較小（開發時縮視窗、預覽窗格、
+    //    接了別的螢幕…），刪掉的話使用者排好的版面就永久沒了，而且不會知道是何時消失的。
+    //    忽略是可逆的，刪除不是 —— 把視窗調回原本的尺寸就該自己套回來。
     if (!looksSane()) {
       unfreeze();
       dirty = false;
-      clearTimeout(fileTimer);
-      try { localStorage.removeItem(storageKey); } catch { /* 無痕模式 */ }
-      fetch(layoutUrl, { method: 'DELETE' }).catch(() => {});
-      console.warn(`[editor] ${layoutUrl} 的版面和目前視窗對不起來，已忽略並回到自動排版`);
+      clearTimeout(fileTimer);          // 這一次不要把自動排版寫回檔案
+      console.warn(`[editor] ${layoutUrl} 的版面和目前視窗對不起來，這一次先用自動排版；` +
+        '存檔留著，把視窗調回原本的尺寸就會套回來。');
       return false;
     }
 
@@ -882,6 +884,7 @@ export function createEditor({
     const on = modelEdit || pivotEdit;
     layer?.classList.toggle('is-pass', on);
     root.classList.toggle('is-model-edit', on);
+    viewer?.freeCamera(on);     // 第一頁的鏡頭平常是鎖住的，調整期間才放行
     viewer?.setInteractionMode(pivotEdit ? 'pivot' : 'orbit');
     viewer?.showPivot(on);      // 編輯視角時都顯示軸心線（右鍵平移會移動它）
     // 調整視角或開著時間軸的期間，不要邊拖邊被自動旋轉／擺動拉走（不影響存檔的開關）

@@ -578,7 +578,13 @@ svg{display:block}
 }
 
 /* ---------- 標題 ---------- */
-.home__brand{grid-area:brand;display:flex;align-items:center;gap:1rem}
+/* 「雲端宅邸」永遠壓在 3D 之上。舞台被放大到蓋住整個畫面之後，
+   標題和 canvas 是重疊的，而 .home__stage 有 position:relative、DOM 又排在標題後面，
+   不指定層級的話模型和煙霧會擋在字前面。
+   .home 自己有 z-index:2、是一個獨立的堆疊環境，所以這個數字只跟舞台裡那幾層比：
+   黑幕 2 ／ 舞台標籤 3 ／ 載入中 4 ／ 恭喜通關 5，取 6 就都在上面。
+   其他版面元素（按鈕、功能鍵、標語）要一起浮上來的話，比照加 position:relative + z-index。 */
+.home__brand{grid-area:brand;display:flex;align-items:center;gap:1rem;position:relative;z-index:6}
 .home__mark{width:3.6rem;height:3.6rem;flex:none;color:var(--brand-hi)}
 .home__mark svg{
   width:100%;height:100%;fill:none;stroke:currentColor;
@@ -594,6 +600,361 @@ svg{display:block}
 /* ---------- 3D 區 ---------- */
 .home__stage{grid-area:stage;min-width:0;min-height:0}
 
+/* ---------- 右上：標語 + 即時狀態面板 ----------
+   兩個都是**新增**的，沒有動到既有元素。
+   標語跟 .home__brand 同一個 grid 區（brand），靠 justify-self 推到右邊；
+   狀態面板跟 .home__route 同一個 grid 區（panel），一個貼上緣、一個置中，所以不會撞在一起。
+   位置和大小之後在編輯模式（E）用 homeTagline / homeStatus 兩個物件調。 */
+/* 右上是兩行：標語 + 小標。殼負責吃格線位置和靠右，
+   **字級也定在殼上**（.92rem）—— 小標用 em 掛在這個數字上，改標語字級小標會跟著等比縮放。
+   data-obj 掛在殼上，所以編輯模式（E）拖的是「兩行一起」。 */
+.home__head{
+  grid-area:brand;justify-self:end;align-self:center;
+  font-size:.92rem;text-align:right;
+}
+.home__tagline{
+  font-size:1em;font-weight:500;letter-spacing:.14em;color:var(--brand-hi);
+  padding-left:.14em;                      /* 補掉字距在尾端多出來的空白，看起來才是靠右對齊 */
+  white-space:nowrap;
+}
+/* 小標：比照第一頁右上「火勢與濃煙擴散極快…」（.side-head p）——
+   一樣的行高／字距／顏色，字級取**跟標題的比例**（.8rem ÷ 1.62rem ≈ .494），
+   不是照搬 .8rem：這一塊在版面上被放大到 3.5 倍，照搬會變成兩行一樣大、不像小標。 */
+.home__sub{
+  margin-top:.5rem;
+  font-size:.494em;line-height:1.6;letter-spacing:.06em;color:var(--ink-3);
+}
+/* × 比詞小一號；左右的間距**全部由 margin 控制**（index.html 那邊兩側已經沒有空白字元了），
+   要調寬窄改 margin 一個數字就好 */
+.home__tagline em{font-style:normal;opacity:.5;font-size:.72em;margin:0 .28em}
+/* 待機（藍）時三個詞每 5 秒依序亮起：即時感知紅 → 動態判斷黃 → 智慧分流綠。
+   沒輪到的維持 --brand-hi（藍）。紅／綠介面不跑這個，三個詞都是原本的顏色。
+   亮不亮由 js/main.js 掛 .is-on 決定，這裡只負責顏色。
+
+   顏色是純的語意色，**濃淡靠 opacity 漸強**：亮起的當下是 --lit（帶一點透明度，就是原本那個感覺），
+   到下一顆起火點出現前會慢慢拉滿到不透明。--tag-step 由 js/main.js 依 viewer.idleFirePeriod() 設定，
+   所以漸強的長度自動跟起火點的週期一樣長。
+   **換哪一個詞也是起火點在管**（不是自己的計時器），見 js/main.js 的 stepTagline()。 */
+.home__tagline{--lit:.6; --tag-step:4.75s}
+.home__tagline b{
+  font-weight:inherit;
+  transition:color .45s var(--ease), text-shadow .45s var(--ease);
+}
+.home__tagline b.is-on{
+  text-shadow:0 0 .7rem color-mix(in srgb, currentColor 55%, transparent);
+  /* class 是每次換詞時重新掛上去的，所以動畫會自動從頭跑一次；forwards 讓它停在最飽和的狀態 */
+  animation:taglineRamp var(--tag-step) linear forwards;
+}
+.home__tagline b:nth-of-type(1).is-on{color:var(--red)}
+.home__tagline b:nth-of-type(2).is-on{color:var(--amber)}
+.home__tagline b:nth-of-type(3).is-on{color:var(--exit)}
+/* 在「這一顆起火點的壽命」內把飽和度從 --lit 拉到滿 */
+@keyframes taglineRamp{
+  from { opacity:var(--lit) }
+  to   { opacity:1 }
+}
+@media (prefers-reduced-motion:reduce){
+  .home__tagline b.is-on{ animation:none; opacity:1 }
+}
+
+/* 四列包在**同一個**倒角框裡（不是四個各自的框），列與列之間用一條細分隔線 */
+.home__status{
+  grid-area:panel;align-self:start;
+  --ch:.6rem;
+  --tag:62%;              /* 右側小字的濃度：越小越淡（100% = 純的 --red / --exit） */
+  list-style:none;
+  padding:.3rem 1.05rem;
+}
+.home__status-item{
+  display:flex;align-items:center;gap:.85rem;
+  padding:.6rem 0;min-height:2.4rem;
+  color:var(--ink);
+}
+.home__status-item + .home__status-item{border-top:1px solid var(--brand-line)}
+.home__status-ico{width:1.4rem;height:1.4rem;flex:none;color:var(--brand-hi)}
+.home__status-ico svg{
+  width:100%;height:100%;fill:none;stroke:currentColor;
+  stroke-width:1.35;stroke-linecap:round;stroke-linejoin:round;
+}
+.home__status-item b{font-size:.95rem;font-weight:500;letter-spacing:.1em}
+/* 右側小字：綠＝安全（低風險／暢通）、紅＝要注意（已辨識／壅塞）。
+   兩個都是語意色（--exit / --red），**不隨主題變**，紅色介面下也還是綠的綠、紅的紅。
+   顏色**刻意調淡**（跟 transparent 混，色相不變、只是濃度降下來），不要跟主標題搶。
+   要更淡／更濃改上面的 --tag 一個數字就好。 */
+.home__status-item i{
+  margin-left:auto;
+  font-style:normal;font-size:.6rem;font-weight:500;letter-spacing:.1em;
+  color:var(--ink-3);
+  transition:color .35s var(--ease);       /* 通關時「已辨識」會換字換色，不要硬跳 */
+}
+.home__status-item i.is-ok{color:color-mix(in srgb, var(--exit) var(--tag), transparent)}
+.home__status-item i.is-alert{color:color-mix(in srgb, var(--red) var(--tag), transparent)}
+
+/* ---------- 兩顆「逃生動線」按鈕的雜訊抽動 ----------
+   **兩種風格混在一起**：
+     A（訊號壞掉）  真的疊一層雜訊：橫掃描線 + 顆粒 + 撕裂遮罩，一格一格硬跳，整體忽亮忽暗
+     B（橫向殘影）  框線／圖示／文字往右糊出去再收回來，圖示和文字還會真的位移
+   A 給「壞掉」的髒感，B 給「訊號被拉走」的動感，兩個同時發生才像映像管真的在抽。
+
+   **不是固定週期的循環**，而是走到時間軸的一個點就抽一次
+   （js/main.js 的 glitchBtn() 掛上 .is-glitch，跑完 one-shot 動畫再自己拿掉）。
+   一次 0.5 秒：衝出去 → 收 → 再衝一次（比較大）→ 收 → 小抖一下 → 乾淨。
+
+   誰在抽、什麼顏色，由 js/main.js 決定（同一組動畫）：
+     待機（藍）  → 「展示逃生動線」，節奏來自擺盪時間軸（onSwingBeat），
+                   快回到點 1 那幾秒改成跟綠樓梯同步（onStairBlink）
+     通關（綠）  → 「切換逃生動線」，節奏抄同一組拍長（swingBeatSeconds）
+   顏色不用切 —— 所有 keyframes 吃 --gl，而 --gl = --brand-hi，主題轉綠它就跟著綠。
+   **進場的第一拍都不抽**（藍是 skipGlitch，綠是第一拍先等一拍才開始）。
+
+   五層一起動：
+     .home__route-noise   雜訊層（routeNoise 忽隱忽現 + routeScan 掃描線跳捲 + routeTear 撕裂遮罩左右跳）
+     ::after              框線的殘影 + 整體提亮（routeBlink）
+     ::before             底光（routeBlinkFill）
+     .home__route-ico     圖示的殘影 + 位移 + 提亮（routeBlinkIco）
+     .home__route-label   文字的殘影 + 位移（routeBlinkTxt）
+
+   殘影是用 **drop-shadow 串**做的：drop-shadow 吃的是元素的 alpha 形狀，而框線畫在
+   .chamfer 的 ::after（clip-path 切出來的中空八邊形）上，所以影子會**完全照著倒角的形狀**跑，
+   不是一個矩形。串在一起的每一層都是「上一層結果」的影子，所以會疊成一條拖尾。
+
+   ⚠️ 每一格的 filter **函式數量要一模一樣**（現在是 5 個 drop-shadow + 1 個 brightness），
+      不然不會平滑內插、會變成硬跳；乾淨的那幾格用 drop-shadow(0 0 0 transparent) 補位。
+   ⚠️ **右邊的殘影推得比左邊遠、也比左邊濃**，位移也是右邊為主 —— 這就是「右邊更亮、左邊更暗」。
+   ⚠️ 雜訊層一定要有那層 **撕裂遮罩**（mask-image）：沒有它整條按鈕會一起亮，看起來很均勻、
+      不像壞掉的訊號。遮罩是寬 240% 的不規則橫向區塊，每一格跳到不同位置，
+      所以每一瞬間只有幾塊在閃、其他地方是乾淨的。
+   ⚠️ 掃描線的抖動放在 background-position **不要放 transform** —— transform 會把裁好的
+      倒角一起移出去，邊緣會露餡。
+   --stroke / --bw 那種自訂屬性沒辦法內插，不要想用它們做動畫。 */
+.home__route-btn{
+  /* 抽動的主色：直接吃主題色 —— 綠色介面的 --brand-hi 本來就是綠的（:root[data-theme="green"]），
+     所以「同一套動畫、藍的時候藍、綠的時候綠」，不用另外開一個綠色版本 */
+  --gl:var(--brand-hi);
+  --gl-soft:var(--brand);                  /* 底光和圖示光暈用的淡一號 */
+}
+
+/* ── A：雜訊層 ───────────────────────────────────────────
+   三層背景疊起來：兩組週期不一樣的橫條紋（11px / 29px，互相打拍就會很亂）
+   加一層 feTurbulence 的細顆粒。平常 opacity:0，抽動時才被 routeNoise 打開。
+   z-index:2 蓋在文字（.chamfer > * 的 z-index:1）和框線上面；
+   screen 混色所以只會提亮不會壓暗；clip-path 用 --shape 裁成倒角，不會溢出按鈕外面。 */
+.home__route-btn .home__route-noise{
+  position:absolute;inset:0;z-index:2;pointer-events:none;
+  opacity:0;
+  clip-path:var(--shape);
+  mix-blend-mode:screen;
+  background:
+    repeating-linear-gradient(0deg,
+      transparent 0px, transparent 1px,
+      rgba(255,255,255,.30) 1px, rgba(255,255,255,.30) 2px,
+      transparent 2px, transparent 4px,
+      color-mix(in srgb, var(--gl) 26%, transparent) 4px, color-mix(in srgb, var(--gl) 26%, transparent) 5px,
+      transparent 5px, transparent 7px,
+      rgba(255,255,255,.16) 7px, rgba(255,255,255,.16) 9px,
+      transparent 9px, transparent 11px),
+    repeating-linear-gradient(0deg,
+      transparent 0px, transparent 3px,
+      rgba(255,255,255,.12) 3px, rgba(255,255,255,.12) 4px,
+      transparent 4px, transparent 17px,
+      color-mix(in srgb, var(--gl) 18%, transparent) 17px, color-mix(in srgb, var(--gl) 18%, transparent) 19px,
+      transparent 19px, transparent 29px),
+    /* 細顆粒：feTurbulence + feColorMatrix 去彩度的灰白靜電 */
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='90'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='90' filter='url(%23n)' opacity='.45'/%3E%3C/svg%3E");
+  background-size:auto, auto, 140px 90px;
+  /* 橫向不規則的區塊遮罩：只有黑色那幾段看得到雜訊 */
+  -webkit-mask-image:linear-gradient(90deg,
+    transparent 0%,  #000 3%,  #000 12%, transparent 14%,
+    transparent 20%, #000 22%, #000 27%, transparent 29%,
+    transparent 41%, #000 43%, #000 63%, transparent 65%,
+    transparent 72%, #000 74%, #000 80%, transparent 82%,
+    transparent 89%, #000 91%, #000 98%, transparent 100%);
+  mask-image:linear-gradient(90deg,
+    transparent 0%,  #000 3%,  #000 12%, transparent 14%,
+    transparent 20%, #000 22%, #000 27%, transparent 29%,
+    transparent 41%, #000 43%, #000 63%, transparent 65%,
+    transparent 72%, #000 74%, #000 80%, transparent 82%,
+    transparent 89%, #000 91%, #000 98%, transparent 100%);
+  -webkit-mask-size:240% 100%;  mask-size:240% 100%;
+  -webkit-mask-repeat:repeat-x; mask-repeat:repeat-x;
+}
+
+.home__route-btn.is-glitch .home__route-noise{
+  animation:routeNoise .5s steps(1,end) 1,
+            routeScan .1s steps(7) infinite,      /* 掃描線只在雜訊看得見的時候有意義 */
+            routeTear .5s steps(1,end) 1;         /* 橫向區塊左右跳，一格一格換位置 */
+}
+.home__route-btn.is-glitch::after{
+  animation:routeBlink .5s linear 1;
+}
+.home__route-btn.is-glitch::before{
+  animation:routeBlinkFill .5s steps(1,end) 1;
+}
+.home__route-btn.is-glitch .home__route-ico svg{
+  animation:routeBlinkIco .5s linear 1;
+}
+.home__route-btn.is-glitch .home__route-label{
+  animation:routeBlinkTxt .5s linear 1;
+}
+
+/* 雜訊忽隱忽現：兩段爆發（前段 0～28%、後段 68～84%），中間留一段乾淨的。
+   節奏跟殘影**故意不對齊** —— 對齊了就變成「一起呼吸」，錯開才像兩件事同時壞掉。 */
+@keyframes routeNoise{
+  0%      { opacity:.70 }
+  12%     { opacity:.10 }
+  20%     { opacity:.52 }
+  28%     { opacity:.18 }
+  68%     { opacity:.62 }
+  76%     { opacity:.08 }
+  84%     { opacity:.44 }
+  92%,100%{ opacity:0 }
+}
+
+/* 掃描線跳著捲（兩層速度不同，看起來才不規則），順便左右抖幾個 px 當撕裂感。
+   第三層是顆粒，位置也一起跳，顆粒才不會看起來像貼死的紋理。 */
+@keyframes routeScan{
+  0%   { background-position:0 0,       0 0,     0 0 }
+  25%  { background-position:3px -9px,  -2px 15px, 37px 23px }
+  50%  { background-position:-2px -18px, 3px 30px, 71px 8px }
+  75%  { background-position:2px -26px, -3px 44px, 19px 61px }
+  100% { background-position:0 -33px,   0 58px,  53px 40px }
+}
+
+/* 橫向區塊遮罩左右跳：每一格亮的地方都不一樣，就不會整條一起亮 */
+@keyframes routeTear{
+  0%   { -webkit-mask-position:0 0;    mask-position:0 0 }
+  12%  { -webkit-mask-position:-62% 0; mask-position:-62% 0 }
+  20%  { -webkit-mask-position:-18% 0; mask-position:-18% 0 }
+  28%  { -webkit-mask-position:-95% 0; mask-position:-95% 0 }
+  68%  { -webkit-mask-position:-41% 0; mask-position:-41% 0 }
+  76%  { -webkit-mask-position:-8% 0;  mask-position:-8% 0 }
+  84%  { -webkit-mask-position:-77% 0; mask-position:-77% 0 }
+  100% { -webkit-mask-position:-30% 0; mask-position:-30% 0 }
+}
+
+/* ── B：框線的殘影 + 整體提亮 ──────────────────────────
+   第 1 個 drop-shadow 是原本就有的光暈，後面四個是右二左二的殘影，
+   最後的 brightness 是舊版那種「整條忽亮」的提亮（跟殘影同一組拍點，所以是一起衝出去的）。 */
+@keyframes routeBlink{
+  0%, 100% { filter:
+    drop-shadow(0 0 .45rem color-mix(in srgb, var(--gl) 55%, transparent))
+    drop-shadow(0 0 0 transparent)
+    drop-shadow(0 0 0 transparent)
+    drop-shadow(0 0 0 transparent)
+    drop-shadow(0 0 0 transparent)
+    brightness(1) }
+  16% { filter:
+    drop-shadow(0 0 .8rem color-mix(in srgb, var(--gl) 62%, transparent))
+    drop-shadow(5px 0 0 color-mix(in srgb, var(--gl) 48%, transparent))
+    drop-shadow(-3px 0 0 color-mix(in srgb, var(--gl) 20%, transparent))
+    drop-shadow(9px 0 0 color-mix(in srgb, var(--gl) 24%, transparent))
+    drop-shadow(-5px 0 0 color-mix(in srgb, var(--gl) 10%, transparent))
+    brightness(1.35) }
+  34% { filter:
+    drop-shadow(0 0 .55rem color-mix(in srgb, var(--gl) 55%, transparent))
+    drop-shadow(2px 0 0 color-mix(in srgb, var(--gl) 18%, transparent))
+    drop-shadow(-1px 0 0 color-mix(in srgb, var(--gl) 8%, transparent))
+    drop-shadow(3px 0 0 color-mix(in srgb, var(--gl) 9%, transparent))
+    drop-shadow(-2px 0 0 color-mix(in srgb, var(--gl) 4%, transparent))
+    brightness(1) }
+  56% { filter:
+    drop-shadow(0 0 .9rem color-mix(in srgb, var(--gl) 66%, transparent))
+    drop-shadow(8px 0 0 color-mix(in srgb, var(--gl) 52%, transparent))
+    drop-shadow(-4px 0 0 color-mix(in srgb, var(--gl) 22%, transparent))
+    drop-shadow(15px 0 0 color-mix(in srgb, var(--gl) 26%, transparent))
+    drop-shadow(-8px 0 0 color-mix(in srgb, var(--gl) 11%, transparent))
+    brightness(1.5) }
+  76% { filter:
+    drop-shadow(0 0 .5rem color-mix(in srgb, var(--gl) 55%, transparent))
+    drop-shadow(2px 0 0 color-mix(in srgb, var(--gl) 14%, transparent))
+    drop-shadow(-1px 0 0 color-mix(in srgb, var(--gl) 6%, transparent))
+    drop-shadow(4px 0 0 color-mix(in srgb, var(--gl) 7%, transparent))
+    drop-shadow(-2px 0 0 color-mix(in srgb, var(--gl) 3%, transparent))
+    brightness(1) }
+  90% { filter:
+    drop-shadow(0 0 .65rem color-mix(in srgb, var(--gl) 58%, transparent))
+    drop-shadow(4px 0 0 color-mix(in srgb, var(--gl) 30%, transparent))
+    drop-shadow(-2px 0 0 color-mix(in srgb, var(--gl) 12%, transparent))
+    drop-shadow(7px 0 0 color-mix(in srgb, var(--gl) 15%, transparent))
+    drop-shadow(-4px 0 0 color-mix(in srgb, var(--gl) 6%, transparent))
+    brightness(1.3) }
+}
+
+/* 圖示：同一套殘影，偏移小一點（圖示本來就小，推太遠會糊成一團），再加上真的位移和提亮 */
+@keyframes routeBlinkIco{
+  0%, 100% { transform:translateX(0); filter:
+    drop-shadow(0 0 .6rem color-mix(in srgb, var(--gl-soft) 45%, transparent))
+    drop-shadow(0 0 0 transparent)
+    drop-shadow(0 0 0 transparent)
+    brightness(1) }
+  16% { transform:translateX(2px); filter:
+    drop-shadow(0 0 .9rem color-mix(in srgb, var(--gl) 55%, transparent))
+    drop-shadow(3px 0 0 color-mix(in srgb, var(--gl) 45%, transparent))
+    drop-shadow(-2px 0 0 color-mix(in srgb, var(--gl) 18%, transparent))
+    brightness(1.3) }
+  34% { transform:translateX(-1px); filter:
+    drop-shadow(0 0 .65rem color-mix(in srgb, var(--gl-soft) 45%, transparent))
+    drop-shadow(1px 0 0 color-mix(in srgb, var(--gl) 15%, transparent))
+    drop-shadow(-1px 0 0 color-mix(in srgb, var(--gl) 6%, transparent))
+    brightness(1) }
+  56% { transform:translateX(4px); filter:
+    drop-shadow(0 0 1rem color-mix(in srgb, var(--gl) 60%, transparent))
+    drop-shadow(5px 0 0 color-mix(in srgb, var(--gl) 48%, transparent))
+    drop-shadow(-3px 0 0 color-mix(in srgb, var(--gl) 20%, transparent))
+    brightness(1.4) }
+  76% { transform:translateX(-1px); filter:
+    drop-shadow(0 0 .6rem color-mix(in srgb, var(--gl-soft) 45%, transparent))
+    drop-shadow(1px 0 0 color-mix(in srgb, var(--gl) 12%, transparent))
+    drop-shadow(-1px 0 0 color-mix(in srgb, var(--gl) 5%, transparent))
+    brightness(1) }
+  90% { transform:translateX(2px); filter:
+    drop-shadow(0 0 .75rem color-mix(in srgb, var(--gl) 50%, transparent))
+    drop-shadow(2px 0 0 color-mix(in srgb, var(--gl) 26%, transparent))
+    drop-shadow(-1px 0 0 color-mix(in srgb, var(--gl) 10%, transparent))
+    brightness(1.25) }
+}
+
+/* 文字：跟著框和圖示一起被推。位移比圖示再大一點（整塊字一起走比較看得出來），
+   殘影一樣是右邊推得遠、左邊淺淺一層。文字不加 brightness —— 字提亮會糊掉、反而看不清楚。 */
+@keyframes routeBlinkTxt{
+  0%, 100% { transform:translateX(0); filter:
+    drop-shadow(0 0 0 transparent)
+    drop-shadow(0 0 0 transparent) }
+  16% { transform:translateX(3px); filter:
+    drop-shadow(4px 0 0 color-mix(in srgb, var(--gl) 42%, transparent))
+    drop-shadow(-2px 0 0 color-mix(in srgb, var(--gl) 16%, transparent)) }
+  34% { transform:translateX(-1px); filter:
+    drop-shadow(2px 0 0 color-mix(in srgb, var(--gl) 14%, transparent))
+    drop-shadow(-1px 0 0 color-mix(in srgb, var(--gl) 6%, transparent)) }
+  56% { transform:translateX(6px); filter:
+    drop-shadow(7px 0 0 color-mix(in srgb, var(--gl) 48%, transparent))
+    drop-shadow(-4px 0 0 color-mix(in srgb, var(--gl) 18%, transparent)) }
+  76% { transform:translateX(-2px); filter:
+    drop-shadow(2px 0 0 color-mix(in srgb, var(--gl) 12%, transparent))
+    drop-shadow(-1px 0 0 color-mix(in srgb, var(--gl) 5%, transparent)) }
+  90% { transform:translateX(3px); filter:
+    drop-shadow(3px 0 0 color-mix(in srgb, var(--gl) 26%, transparent))
+    drop-shadow(-2px 0 0 color-mix(in srgb, var(--gl) 10%, transparent)) }
+}
+
+/* 底光：跟殘影同步閃一下。這一支維持硬跳（steps），配合抖動的節奏。
+   雜訊已經另外有一層了，這裡只管顏色。 */
+@keyframes routeBlinkFill{
+  0%      { background-color:color-mix(in srgb, var(--gl-soft) 16%, transparent) }
+  34%     { background-color:transparent }
+  56%     { background-color:color-mix(in srgb, var(--gl-soft) 18%, transparent) }
+  76%     { background-color:transparent }
+  90%     { background-color:color-mix(in srgb, var(--gl-soft) 12%, transparent) }
+  96%,100%{ background-color:transparent }
+}
+
+@media (prefers-reduced-motion:reduce){
+  .home__route-btn.is-glitch .home__route-noise,
+  .home__route-btn.is-glitch::after,
+  .home__route-btn.is-glitch::before,
+  .home__route-btn.is-glitch .home__route-ico svg,
+  .home__route-btn.is-glitch .home__route-label{ animation:none }
+}
 /* ---------- 逃生動線示範（原本歡迎面板的位置） ---------- */
 .home__route{
   grid-area:panel;align-self:center;

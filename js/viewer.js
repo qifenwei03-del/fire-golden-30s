@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+// 粗線：WebGL 的 THREE.Line 畫不出寬度（linewidth 幾乎都被鎖在 1px），首頁的動線改用這一組
+import { Line2 } from 'three/addons/lines/Line2.js';
+import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 
 // Draco 解碼器放在專案內（models/draco/），不依賴外部 CDN —— 離線／網路被擋也能載入模型。
 // 路徑相對於網頁根目錄（頁面在 / 下），DRACOLoader 會去 /models/draco/ 抓。
@@ -9,7 +13,8 @@ const DRACO_PATH = './models/draco/';
 
 /** 每個佔位場景的鏡頭預設值 */
 const SCENE_VIEWS = {
-  flat:  { pos: [14, 15, 18], target: [0, 1, 0], min: 6, max: 90, fog: [26, 62], autoRotate: false, swing: false },  // 第一頁不轉、不擺動
+  // 第一頁不轉、不擺動，而且 lock:true ＝**完全不能用滑鼠動鏡頭**（見 setCameraLock）
+  flat:  { pos: [14, 15, 18], target: [0, 1, 0], min: 6, max: 90, fog: [26, 62], autoRotate: false, swing: false, lock: true },
   tower: { pos: [18, 14, 22], target: [0, 3.2, 0], min: 8, max: 110, fog: [30, 76] },
 };
 
@@ -18,11 +23,101 @@ const SCENE_VIEWS = {
     emissive = 白模式的自發光強度。**這支越大底部越亮、層次越平**，要更深就往下調（0 = 完全靠打光） */
 const SHADE = { span: 0.55, emissive: 0.07 };
 
+/** 待機起火點的節奏與挑選規則。
+
+    ⚠️ **整組節奏是掛在「擺盪的時間軸」上的，不是固定秒數。**
+    擺盪是 k = (1-cos(w·Δt))/2，把一趟切成四段，w·Δt 每走 π/2 就經過時間軸上的一個點：
+
+      點 1（相位 0）     一端      正轉 → 起火點換新的（挑**畫面左邊**那一帶）、樓梯白、紅字
+      點 2（相位 π/2）   中間      正轉 → 起火點換新的（挑**畫面中間**）、樓梯白、黃字
+      點 3（相位 π）     另一端    正轉到底 → 起火點換新的（挑**畫面右邊**那一帶）、樓梯白、綠字
+      點 4（相位 3π/2）  中間      反轉 → **維持點 3 那顆起火點**、樓梯**轉綠**、綠字撐著，
+                                   而且那顆起火點會在點 4 → 點 1 之間**慢慢淡到不見**
+      （回到點 1 = 樓梯變回白、起火點重新出現，一個循環）
+
+    每經過一個點就發一次 onSwingBeat({ point, fwd, word, first })：
+      起火點 / 樓梯顏色 / 淡出 —— viewer 自己處理
+      標語換字、按鈕抽動 —— 外面訂閱，見 js/main.js（按鈕四個點都抽，標語只有 1/2/3 換）
+
+    一趟 = 2π / (0.9 × |autoRotateSpeed|) 秒，改擺盪速度整組節奏就自動跟著變。
+    沒在擺盪（swing 關掉或速度 0）才退回 every 的固定秒數（那時只有起火點會換）。
+
+    **一顆的壽命就是一拍**（下一拍換位置時它才熄掉），所以中間不會有空白。
+    下一顆是在舊的熄掉前 overlap 秒就先冒出來的，那 overlap 秒是**兩處同時在燒**。
+    overlap 設 0 就是無縫接替（永遠只有一顆）；沒有淡入淡出，一律直接開／關。
+
+    因為要並存，起火點做成**兩格輪流用**（slots），不是一顆搬來搬去。
+
+    位置從**離鏡頭最近的 pool 條**動線起點裡隨機挑，並避開正在燒的那一條
+    （候選只剩一條時例外），所以每一輪都真的會換地方；
+    不想每次都換就把 _pickFireStart() 裡的 pool.filter 拿掉。 */
+const IDLE_FIRE = { overlap: 0.25, pool: 3, every: 4.75 };   // 節拍改由 SWING_BEATS 決定，不再切等分
+
+/** 首頁（tower）逃生動線那條線的長相。**只有首頁用這一組，第一頁（flat）維持原本的細綠虛線。**
+    做法是一條「核心」+ 一條更寬的「光暈」（相加混色）疊出發光感，兩條**共用同一份 geometry**，
+    所以畫到哪裡只要更新一次。
+    width / halo 的單位是**螢幕像素**（拉遠拉近都一樣粗，要靠 material.resolution，見 _syncLineRes）；
+    dash / gap 是模型單位（數字越小虛線越密）。 */
+const ROUTE_LINE = { width: 3.4, halo: 12, haloOpacity: 0.2, dash: 0.32, gap: 0.2 };
+
+/** 待機的「擺盪時間軸」：**1 和 4 是擺幅的兩端，2 和 3 把中間平分成三段**。
+    擺盪的位置是 k = (1-cos θ)/2（θ = w·Δt，一個循環 0~2π），所以四個點的 k 是 0 / ⅓ / ⅔ / 1，
+    換算成 θ 就是 0 / acos(⅓) / acos(-⅓) / π —— **時間上不是等距的**（餘弦在兩端會變慢）。
+    回程（θ π~2π）會再經過點 3、點 2，所以一個循環總共踩到 **6 個節拍**。 */
+const _A13 = Math.acos(1 / 3);          // k = 1/3
+const _A23 = Math.acos(-1 / 3);         // k = 2/3
+// pick = 這個點要用哪幾條動線（0 起算，也就是「動線1」= 0）。多於一條就隨機挑、並避開剛剛那條。
+// null = 不換起火點（點 4 之後整個回程都維持點 3 那一顆）。
+const SWING_BEATS = [
+  { th: 0,                    point: 1, fwd: true,  word: 1, pick: [0, 1], green: false },  // 動線 1 或 2
+  { th: _A13,                 point: 2, fwd: true,  word: 2, pick: [2],    green: false },  // 動線 3
+  { th: _A23,                 point: 3, fwd: true,  word: 3, pick: [3, 4], green: false },  // 動線 4 或 5
+  { th: Math.PI,              point: 4, fwd: true,  word: 3, pick: null,   green: true  },  // 端點，開始回程
+  { th: 2 * Math.PI - _A23,   point: 3, fwd: false, word: 3, pick: null,   green: true  },
+  { th: 2 * Math.PI - _A13,   point: 2, fwd: false, word: 3, pick: null,   green: true  },
+];
+
+/** 回程那半圈「綠色樓梯」的長相。q = 回程走到幾成（θ 從 π 到 2π 換算成 0~1）。
+    glow    = 綠的時候自發光開到多強。⚠️ 綠的期間 **diffuse 會被壓成純黑**，畫面上完全只剩自發光 ——
+              不然打光會疊在綠色上面，看起來白白髒髒的（原本樓板的白透出來）。
+              所以這個數字就是「那片綠有多亮」，1.0 差不多就是標語那個綠。
+    swell   = 前幾成用來把光推上去（不要用跳的）
+    blip    = **碰到點抖一下**的長度
+    blinkAt = 走到幾成開始「消失前的連抖」
+    blinks  = 抖幾次（改幾次就要把 duty 的長度一起改）
+    duty    = 每一次抖「外溢」佔多少（故意不一樣，才不像節拍器）
+
+    抖動不是「整座消失」，是**橫向外溢再收縮**（映像管訊號糊掉的感覺）：
+    ghosts  = 左右各疊幾層殘影
+    spread  = 最外那一層偏移多少（模型單位）—— 這支就是「糊得多開」，覺得誇張就往下調
+    ghostOp = 殘影最濃的時候多濃
+    dim     = 外溢的時候本體要淡掉多少 */
+const STAIR_GREEN = {
+  glow: 1.0, swell: 0.08, blip: 0.06, blinkAt: 0.78, blinks: 2, duty: [0.55, 0.4],
+  ghosts: 3, spread: 0.18, ghostOp: 0.55, dim: 0.5,
+};
+/** 回程會踩到的點換算成 q（點 4 自己、點 3、點 2）—— 碰到就閃一下 */
+const STAIR_BLIPS = [0, (2 * Math.PI - _A23 - Math.PI) / Math.PI, (2 * Math.PI - _A13 - Math.PI) / Math.PI];
+
+/** 線頭那個「正在逃生的人」：白色的逃生標誌小人（sprite，永遠面向鏡頭）。
+    size   = 模型單位的高度（一層樓約 3.5）
+    glow   = 光暈是本體的幾倍大（也決定光暈貼圖裡本體要縮多小，才有空間讓模糊暈開）
+    glowOp = 光暈濃度（相加混色，越大越亮）
+    light  = 他隨身帶的那顆白光的強度（0 = 不打光） */
+const RUNNER = { size: 1.0, glow: 2.2, glowOp: 0.55, light: 9 };
+
+/** 第一頁的動線幾秒換一條。倒數一個時段 10 秒，所以最多剛好放得下 5 條 ——
+    但**寧可少跑一條也不要有一條只閃過去**（見 setRoutePhase 的 _phaseEnd）。 */
+const ROUTE_SLOT = 2.0;
+
 /** 每幀都會用到的暫存物件，放外面重複使用，不要在動畫迴圈裡一直 new */
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
 const _v4 = new THREE.Vector3(), _v5 = new THREE.Vector3();
 const _v6 = new THREE.Vector3(), _v7 = new THREE.Vector3(), _v8 = new THREE.Vector3();
+/** 樓梯殘影專用的暫存（每幀都會動，不要跟 _v1~_v8 混用）*/
+const _sgDir = new THREE.Vector3(), _sgMat = new THREE.Matrix4();
 const _sa = new THREE.Spherical(), _sb = new THREE.Spherical(), _sc = new THREE.Spherical();
+const _r2 = new THREE.Vector2();
 
 /** 頭尾各 e 的區間加速／減速，中間完全等速。回傳「已經走完的比例」0~1。
     e=0 就是完全等速（起步和收尾會有點硬），0.12 大約是頭尾各一成的緩衝 */
@@ -38,6 +133,66 @@ const easeEnds = (x, e = 0.12) => {
 /** 煙霧用的**卡通雲朵**貼圖（畫一次就好）。
     幾個圓疊成雲朵剪影，邊緣是硬的（不是漸層糊掉），再用兩層透明度做出「深外圈 + 亮內裡」的賽璐珞感。
     整張是灰階，實際顏色由 sprite 的 color 上色。 */
+/** 逃生標誌的小人（畫一次就好）。用粗的圓頭線條堆出來 —— 這樣縮到很小也還看得出是個在跑的人。
+    整張是白色剪影，實際顏色由 sprite 的 color 決定。座標是 0~1 的比例，方便微調姿勢。 */
+let _runnerTex = null;
+let _runnerCanvas = null;
+function runnerTexture() {
+  if (_runnerTex) return _runnerTex;
+  const S = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const ctx = c.getContext('2d');
+  const P = (x, y) => [x * S, y * S];
+  ctx.fillStyle = ctx.strokeStyle = '#fff';
+  ctx.lineCap = ctx.lineJoin = 'round';
+  ctx.lineWidth = 0.125 * S;
+
+  // 頭。**跟肩膀之間要留一個看得見的空隙**，逃生標誌就是這樣畫的；
+  // 貼太近會糊成一塊，遠看變成一顆有身體的球。
+  ctx.beginPath();
+  ctx.arc(...P(0.265, 0.115), 0.097 * S, 0, Math.PI * 2);
+  ctx.fill();
+
+  const line = (...pts) => {
+    ctx.beginPath();
+    ctx.moveTo(...P(...pts[0]));
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(...P(...pts[i]));
+    ctx.stroke();
+  };
+  line([0.375, 0.315], [0.505, 0.555]);                   // 軀幹（往右前傾）
+  line([0.405, 0.400], [0.625, 0.355], [0.740, 0.505]);   // 前臂：往前伸再往下折
+  line([0.375, 0.385], [0.185, 0.485]);                   // 後臂：往後下方甩
+  line([0.505, 0.555], [0.600, 0.715], [0.555, 0.875]);   // 前腳：抬膝再落下
+  line([0.555, 0.875], [0.715, 0.885]);                   // 前腳掌
+  line([0.505, 0.555], [0.315, 0.655], [0.155, 0.805]);   // 後腳：往後蹬
+  line([0.155, 0.805], [0.105, 0.890]);                   // 後腳掌
+
+  _runnerCanvas = c;                 // 光暈那張直接拿這張去模糊，形狀才會跟著人走
+  _runnerTex = new THREE.CanvasTexture(c);
+  return _runnerTex;
+}
+
+/** 小人的光暈：把小人本體縮小置中、模糊、疊兩次。
+    **形狀是跟著人的**（不是一顆圓球），所以看起來像他自己在發光。
+    縮小是為了讓模糊有地方暈開 —— 畫滿整張的話光暈會被畫布邊緣切掉。 */
+let _runnerGlowTex = null;
+function runnerGlowTexture() {
+  if (_runnerGlowTex) return _runnerGlowTex;
+  runnerTexture();                                  // 先確保本體那張畫好了
+  const S = _runnerCanvas.width;
+  const k = 1 / RUNNER.glow;                        // 本體在光暈貼圖裡佔的比例
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const ctx = c.getContext('2d');
+  ctx.filter = `blur(${0.045 * S}px)`;
+  for (let i = 0; i < 2; i++) {                     // 疊兩次，光暈才夠實
+    ctx.drawImage(_runnerCanvas, S * (1 - k) / 2, S * (1 - k) / 2, S * k, S * k);
+  }
+  _runnerGlowTex = new THREE.CanvasTexture(c);
+  return _runnerGlowTex;
+}
+
 let _smokeTex = null;
 function smokeTexture() {
   if (_smokeTex) return _smokeTex;
@@ -106,6 +261,7 @@ export class Viewer {
 
     this.fires = [];
     this.routes = [];
+    this._lineMats = [];         // 粗線材質（LineMaterial 要知道畫布尺寸才算得出像素寬度）
     this.savedViews = {};        // { flat: {pos,target,autoRotate}, tower: {...} }
     this._shots = {};            // 分鏡：{ tower: { route1..route5, clear: {pos,target} } }
     this._fly = null;            // 正在飛往某個分鏡
@@ -197,6 +353,7 @@ export class Viewer {
     // 有真實模型就以它自動框好的視角為底，否則用佔位場景預設；存過的視角再蓋上去
     const base = (this.customModels[name] && this.customViews[name]) || SCENE_VIEWS[name] || {};
     this._applyView({ ...base, ...(this.savedViews[name] ?? {}) });
+    this.setCameraLock(!!SCENE_VIEWS[name]?.lock);    // 第一頁鎖住鏡頭，首頁照常可以轉
   }
 
   _applyView(v) {
@@ -549,6 +706,16 @@ export class Viewer {
     m.slab.emissive.set(slab);
     // 平常樓板帶 .35 自發光是為了「陰影裡不要變灰」；白模式反過來，就是要讓陰影看得出來
     m.slab.emissiveIntensity = white ? SHADE.emissive : 0.35;
+    // 樓梯平常跟樓板一模一樣；**只有回程那半圈它會變成純綠**（白模式／通關優先，不受影響）。
+    // 綠色期間的實際上色是每幀在 _updateStairGreen() 做的，這裡只負責「不是綠色時」的樣子。
+    if (m.stair) {
+      this._setStairVisible(true);                    // 可能停在抖動的某一格
+      this._setStairSmear(0);                         // 殘影一定要收掉
+      m.stair.color.set(white ? 0xffffff : slab);
+      m.stair.emissive.set(slab);
+      m.stair.emissiveIntensity = white ? SHADE.emissive : 0.35;
+      m.stair.needsUpdate = true;
+    }
     m.wall.needsUpdate = true;
     m.slab.needsUpdate = true;
   }
@@ -560,7 +727,7 @@ export class Viewer {
     const m = this._blueprintMats;
     if (!obj || !m) return;
     const on = this._allWhite;
-    for (const mat of [m.wall, m.slab]) {
+    for (const mat of [m.wall, m.slab, m.stair].filter(Boolean)) {
       if (mat.vertexColors !== on) { mat.vertexColors = on; mat.needsUpdate = true; }
     }
     if (!on) return;                                 // 關掉時留著算好的資料，下次再開就不用重算
@@ -569,7 +736,7 @@ export class Viewer {
     //    一起算進去的話 y 範圍會從 0 開始，整棟就都落在漸層的白色端、看起來完全沒有陰影。
     const meshes = [];
     obj.traverse((o) => {
-      if (o.isMesh && (o.material === m.wall || o.material === m.slab)) meshes.push(o);
+      if (o.isMesh && (o.material === m.wall || o.material === m.slab || o.material === m.stair)) meshes.push(o);
     });
     if (!meshes.length) return;
 
@@ -811,14 +978,25 @@ export class Viewer {
   /** 擺動幅度（左右各幾度） */
   setSwingAmp(deg) { this.swing.amp = THREE.MathUtils.degToRad(Math.max(0, deg)); }
 
-  /** 逃生起點圓點的時段（跟倒數同步）：0=0-10s藍 1=10-20s黃 2=20-30s紅。
-     顏色一切換就換一條動線，並把 2 秒輪播節奏從這一刻重新起算。 */
-  setRoutePhase(idx) {
+  /** 逃生起點圓點的時段（跟倒數同步）：0=0-10s藍 1=10-20s黃 2=20-30s紅（-1 = 還沒開始）。
+     顏色一切換就換一條動線，並把輪播節奏從這一刻重新起算。
+     seconds = 這個時段有多長（秒），用來算「還放不放得下完整的一條」。
+
+     ⚠️ **起訖時間要記在 viewer 上、不要只記在 set 裡**：模型是非同步載入的，
+     第一個時段（藍）通知進來的時候 _routeSets.flat 通常還不存在，
+     等它建好時再從這裡把節奏對齊 —— 不然藍色那段的格子會錨在「載入完 + 1 秒」，
+     跟倒數的時段邊界對不起來，接黃色的時候就會有一條只跑到一半就被換掉。 */
+  setRoutePhase(idx, seconds = 0) {
     const changed = idx !== this._routePhase;
     this._routePhase = idx;
+    if (changed) {
+      const t = this.clock.getElapsedTime();
+      this._phaseT0 = t;
+      this._phaseEnd = (idx >= 0 && seconds > 0) ? t + seconds : Infinity;
+    }
     const set = this._routeSets?.flat;                 // 只有第一頁的動線跟倒數時段連動
     if (changed && set?.groups.length) {
-      set.t0 = this.clock.getElapsedTime();            // 顏色一換 = 換一條動線 + 節奏重新起算
+      set.t0 = this._phaseT0;                          // 顏色一換 = 換一條動線 + 節奏重新起算
       set.slot = 0;
       this._pickRouteInSet(set);
     }
@@ -844,6 +1022,17 @@ export class Viewer {
       c.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
     }
   }
+
+  /** 鎖住鏡頭：滑鼠完全不能轉／縮放／平移。第一頁（flat）用。
+      它是固定俯視，現場手滑一下就轉走而且回不來 —— 而且**接近正俯視是 OrbitControls 的極點**，
+      在那附近拖一點點就會甩很大，所以乾脆整個鎖掉。
+      只影響「使用者輸入」：controls.update() 照跑，自動旋轉／擺動／程式設定的鏡頭都不受影響。 */
+  setCameraLock(on) { this._camLock = !!on; this._syncCamLock(); }
+
+  /** 編輯模式的「調整模型／調整軸心」期間暫時解鎖，不然第一頁就永遠調不了了 */
+  freeCamera(on) { this._camFree = !!on; this._syncCamLock(); }
+
+  _syncCamLock() { this.controls.enabled = !(this._camLock && !this._camFree); }
 
   /** 顯示／隱藏「旋轉軸心」的視覺輔助線（一條通過 target 的垂直軸） */
   showPivot(on) {
@@ -1071,7 +1260,7 @@ export class Viewer {
           if (!this._blueprintMats) this._blueprintMats = this._makeBlueprintMats();  // 首頁：玻璃 + 白樓板
           this._styleBlueprint(obj, this._blueprintMats);   // 換材質 + 加結構邊線（透視感）
           // 逃生動線（固定紅/綠）：首頁改成按鈕觸發，平常藏著
-          if (routeData?.routes?.length) obj.add(this._buildRoutes('tower', routeData.routes, { phase: false, mode: 'manual' }));
+          if (routeData?.routes?.length) obj.add(this._buildRoutes('tower', routeData.routes, { phase: false, mode: 'manual', glow: true }));
           this.customModels.tower = obj;
           this.modelRoot.add(obj);
           this.customViews.tower = this._frameView(obj);
@@ -1127,27 +1316,79 @@ export class Viewer {
       roughness: 0.9, metalness: 0,
       side: THREE.DoubleSide,   // 實心白樓板（不透明），任何角度都是穩定的實面
     });
+    // 樓梯：平常跟樓板長得一模一樣，但**是獨立的材質**，這樣待機反轉那半趟才能只把它變綠
+    const stair = slab.clone();
     // 框線不寫深度：不然近側框線會把後面牆板的玻璃遮掉，整棟就變成只剩線框
     const edge = new THREE.LineBasicMaterial({
       color: new THREE.Color(css('--m-edge', '#74d4ff')), transparent: true, opacity: 0.5,
       depthWrite: false,
     });
-    return { wall, slab, edge, wallEdgeAngle: 30 };   // 首頁牆面只留主要結構線（30°）
+    return { wall, slab, stair, edge, wallEdgeAngle: 30 };   // 首頁牆面只留主要結構線（30°）
   }
 
   _styleBlueprint(obj, mats) {
     const { wall, slab, edge } = mats;
+    const stair = mats.stair ?? slab;                         // 第一頁沒有獨立的樓梯材質，就跟樓板同一個
     const wallAngle = mats.wallEdgeAngle ?? 30;
     obj.traverse((o) => {
       if (!o.isMesh) return;
       const nm = o.material?.name;
       if (nm === 'wall-cut') { o.visible = false; return; }   // 剖面：挖掉靠近視角的兩面外牆
       if (nm === 'floor') { o.visible = false; return; }      // 第一頁：地板抽掉（樓梯 slab 保留）
-      const isSlab = nm === 'slab';
-      o.material = isSlab ? slab : wall;
+      const isSlab = nm === 'slab' || nm === 'stair';
+      o.material = nm === 'stair' ? stair : isSlab ? slab : wall;
+      // 記下來：抖動的時候要拿它做殘影
+      if (nm === 'stair' && mats.stair) (this._stairMeshes ??= []).push(o);
       // 樓板整圈邊線（1°）；牆板依材質設定的門檻（首頁 30° 只留結構線、第一頁 1° 每個轉角都畫）
       o.add(new THREE.LineSegments(new THREE.EdgesGeometry(o.geometry, isSlab ? 1 : wallAngle), edge));
     });
+    if (mats.stair) this._makeStairGhosts();
+  }
+
+  /** 樓梯的「橫向殘影」：左右各 ghosts 層，共用同一份 geometry（不佔記憶體）。
+      平常藏著，抖動的時候才推出去 —— 這就是外溢的視覺。
+      材質用 MeshBasicMaterial（不吃光）+ 相加混色，所以疊起來只會更亮、不會變髒。 */
+  _makeStairGhosts() {
+    const src = this._stairMeshes?.[0];
+    if (!src || this._stairGhosts) return;
+    const n = STAIR_GREEN.ghosts;
+    this._stairGhosts = [];
+    for (let i = 0; i < n * 2; i++) {
+      const g = new THREE.Mesh(src.geometry, new THREE.MeshBasicMaterial({
+        color: new THREE.Color(css('--exit', '#3dffa0')),
+        transparent: true, opacity: 0, depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }));
+      g.visible = false;
+      g.renderOrder = 1;
+      g.userData.step = Math.floor(i / 2) + 1;          // 第幾層（1 = 最靠近本體）
+      g.userData.side = i % 2 ? 1 : -1;
+      src.parent.add(g);
+      this._stairGhosts.push(g);
+    }
+    this._stairBase = src;
+  }
+
+  /** 把殘影推出去／收回來。b = 外溢強度 0~1。
+      **偏移方向取「相機的右方」**，所以不管鏡頭轉到哪，外溢永遠是畫面上的水平方向。 */
+  _setStairSmear(b) {
+    const gs = this._stairGhosts;
+    if (!gs?.length) return;
+    if (b <= 0.001) { for (const g of gs) g.visible = false; return; }
+    const src = this._stairBase;
+    src.updateWorldMatrix(true, false);
+    // 相機的右方向 → 換算成 src 父層的區域方向（transformDirection 只轉方向、不含位移）
+    src.parent.updateWorldMatrix(true, false);
+    _sgDir.setFromMatrixColumn(this.camera.matrixWorld, 0);
+    _sgMat.copy(src.parent.matrixWorld).invert();
+    _sgDir.transformDirection(_sgMat);
+    const n = STAIR_GREEN.ghosts;
+    for (const g of gs) {
+      const k = g.userData.step / n;                     // 越外層偏移越大、越淡
+      g.visible = true;
+      g.position.copy(src.position).addScaledVector(_sgDir, g.userData.side * STAIR_GREEN.spread * k * b);
+      g.material.opacity = STAIR_GREEN.ghostOp * b * (1 - 0.55 * (k - 1 / n));
+    }
   }
 
   /** 第一頁：跟佔位模型同一套簡單材質 —— 實心深色牆 + 淺藍框線（每個轉角都有線）+ 白色樓板 */
@@ -1188,28 +1429,55 @@ export class Viewer {
      每條起點閃紅、終點閃綠。
      mode='auto'   ：一次只隨機顯示一條、每 2 秒換、下一條避開前兩條；載入後第一秒先不出現（第一頁）
      mode='manual' ：平常全部藏著，等 playRoute() 才從起點一路畫到出口（首頁的按鈕）
-     phase=true：起點顏色跟倒數時段變（藍→黃→紅，第一頁用）；false：固定紅（首頁用）。 */
-  _buildRoutes(name, routes, { phase = false, mode = 'auto' } = {}) {
+     phase=true：起點顏色跟倒數時段變（藍→黃→紅，第一頁用）；false：固定紅（首頁用）。
+     glow=true ：粗的紅色發光虛線（Line2，見 ROUTE_LINE）。**只有首頁開，第一頁維持細綠線。** */
+  _buildRoutes(name, routes, { phase = false, mode = 'auto', glow = false } = {}) {
     this._routeSets = this._routeSets || {};
     const g = new THREE.Group();
-    const set = { groups: [], entries: [], startDots: [], recent: [], cur: -1, slot: -1, phase, mode, play: null };
-    const lineColor = new THREE.Color(css('--exit', '#3dffa0'));
+    // recent = playRoute（首頁按按鈕）避開最近播過的；bag = 第一頁自動輪播的洗牌袋
+    const set = { groups: [], entries: [], startDots: [], recent: [], bag: [], cur: -1, slot: -1, phase, mode, play: null };
+    const lineColor = new THREE.Color(css('--exit', '#3dffa0'));   // 兩頁都用安全出口的綠（語意色，不隨主題變）
     for (const r of routes) {
       const rg = new THREE.Group();
       const pts = r.points.map((p) => new THREE.Vector3(p[0], p[1] + 0.15, p[2]));  // 稍微抬離地面
       // 位置另外開一份可改寫的緩衝區：manual 模式要一段一段把線畫出來（改座標 + drawRange）
       const pos = new Float32Array(pts.length * 3);
       pts.forEach((p, i) => { pos[i * 3] = p.x; pos[i * 3 + 1] = p.y; pos[i * 3 + 2] = p.z; });
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      geo.setDrawRange(0, pts.length);
-      const line = new THREE.Line(
-        geo,
-        new THREE.LineDashedMaterial({ color: lineColor, dashSize: 0.7, gapSize: 0.45, transparent: true, opacity: 0.95 })
-      );
-      line.computeLineDistances();
-      this.routes.push(line);                                    // 虛線流動
-      rg.add(line);
+      let line;
+      if (glow) {
+        // 粗的紅色發光虛線：核心 + 更寬的相加光暈，**兩條共用同一份 geometry**（畫到哪裡只更新一次）
+        const geo = new LineGeometry();
+        geo.setPositions(pos);
+        const mk = (w, o, add) => {
+          const m = new LineMaterial({
+            color: lineColor, linewidth: w, dashed: true,
+            dashSize: ROUTE_LINE.dash, gapSize: ROUTE_LINE.gap,
+            transparent: true, opacity: o,
+            depthWrite: !add,                                    // 光暈不寫深度，才不會互相切
+            blending: add ? THREE.AdditiveBlending : THREE.NormalBlending,
+          });
+          this._lineMats.push(m);
+          const l = new Line2(geo, m);
+          l.computeLineDistances();
+          l.renderOrder = add ? 1 : 2;                           // 光暈先畫、核心壓在上面
+          return l;
+        };
+        const halo = mk(ROUTE_LINE.halo, ROUTE_LINE.haloOpacity, true);
+        line = mk(ROUTE_LINE.width, 0.98, false);
+        rg.add(halo); rg.add(line);
+        this.routes.push(halo, line);                            // 虛線流動（兩條要同步）
+      } else {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geo.setDrawRange(0, pts.length);
+        line = new THREE.Line(
+          geo,
+          new THREE.LineDashedMaterial({ color: lineColor, dashSize: 0.7, gapSize: 0.45, transparent: true, opacity: 0.95 })
+        );
+        line.computeLineDistances();
+        this.routes.push(line);                                  // 虛線流動
+        rg.add(line);
+      }
       const start = this._makeDot(pts[0].toArray(), 0xff3b2a, { big: true });        // 起點大紅點
       rg.add(start.group);
       set.startDots.push(phase
@@ -1221,39 +1489,64 @@ export class Viewer {
       // 每個轉折點的累積長度，用來把「跑了幾成」換算成座標
       const cum = [0];
       for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
-      set.entries.push({ line, pts, cum, total: cum[cum.length - 1] || 1, tip: pts[0].clone() });
+      set.entries.push({ line, fat: glow, pts, cum, total: cum[cum.length - 1] || 1, tip: pts[0].clone() });
       rg.visible = false;
       g.add(rg);
       set.groups.push(rg);
     }
     if (mode === 'manual') {
       // 跑動線時停在線頭上的亮點（整組共用一顆，跟著目前那條走）
-      const runner = this._makeDot([0, 0, 0], 0xffffff);
+      const runner = this._makeRunner();
       runner.group.visible = false;
       g.add(runner.group);
       set.runner = runner;
     }
     set.root = g;                                 // 待機起火點之後要掛在這底下
     set.gate = this.clock.getElapsedTime() + 1;   // 載入後第一秒先不出現（避開載入卡頓弄亂第一條）
-    set.t0 = set.gate;                            // 第一條從第 1 秒開始、完整 2 秒
+    set.t0 = set.gate;                            // 第一條從第 1 秒開始、完整一格
+    // 跟倒數連動的那一組：倒數早就開跑了（模型是後來才載完的），把格子對齊到時段的起點，
+    // 這樣時段邊界一定落在格子的邊界上，不會有一條被切一半
+    if (phase && this._phaseT0 != null) set.t0 = this._phaseT0;
     this._routeSets[name] = set;
+    this._syncLineRes();                          // 粗線建好就把畫布尺寸餵進去
     return g;
   }
 
-  /** 把一條動線畫到 k（0~1）的位置：前面的轉折點照抄，最後補一個內插點當線頭 */
-  _drawRouteAt(e, k) {
+  /** 把一條動線畫到 k（0~1）的位置。
+      whole=true ＝整條路都畫出來（線不隨進度長），只有線頭那顆亮點照 k 前進。
+      不管哪一種，e.tip 都會算出來，呼叫端拿它擺線頭。
+
+      ⚠️ **粗線（Line2）的段數從頭到尾固定不變**，還沒跑到的段全部收合到線頭上（長度 0 = 看不見）。
+      **絕對不要用 setPositions 改段數** —— three 的 WebGLBindingStates 只在
+      「第一次繪製這份 geometry」時決定 _maxInstanceCount，之後段數變多也不會跟著長。
+      按下按鈕時線只有 1 段，就會被鎖在 1，整條動線永遠只畫得出第一段（實際踩過，見 HANDOFF 0.23）。 */
+  _drawRouteAt(e, k, whole = false) {
     const target = Math.max(0, Math.min(1, k)) * e.total;
-    const attr = e.line.geometry.getAttribute('position');
     let i = 1;
     while (i < e.cum.length - 1 && e.cum[i] < target) i++;     // target 落在 pts[i-1] → pts[i] 這一段
     const seg = e.cum[i] - e.cum[i - 1] || 1;
     const f = Math.max(0, Math.min(1, (target - e.cum[i - 1]) / seg));
-    for (let j = 0; j < i; j++) attr.setXYZ(j, e.pts[j].x, e.pts[j].y, e.pts[j].z);
     e.tip.lerpVectors(e.pts[i - 1], e.pts[i], f);
-    attr.setXYZ(i, e.tip.x, e.tip.y, e.tip.z);                 // 線頭：內插出來的點
+    const n = e.pts.length;
+    // 第 j 個點畫在哪：已經跑過的照抄，還沒跑到的全部收到線頭上
+    const at = whole ? (j) => e.pts[j] : (j) => (j < i ? e.pts[j] : e.tip);
+    if (e.fat) {
+      const st = e.line.geometry.attributes.instanceStart;
+      const en = e.line.geometry.attributes.instanceEnd;
+      for (let j = 0; j < n - 1; j++) {
+        const a = at(j), b = at(j + 1);
+        st.setXYZ(j, a.x, a.y, a.z);
+        en.setXYZ(j, b.x, b.y, b.z);
+      }
+      st.data.needsUpdate = true;      // 兩個 attribute 共用同一份 interleaved buffer，標記一次就好
+      e.line.computeLineDistances();   // 虛線間距要跟著重算（核心和光暈共用 geometry）
+      return;
+    }
+    const attr = e.line.geometry.getAttribute('position');
+    for (let j = 0; j < n; j++) { const p = at(j); attr.setXYZ(j, p.x, p.y, p.z); }
     attr.needsUpdate = true;
-    e.line.geometry.setDrawRange(0, i + 1);                    // 後面的點還沒跑到，不畫
-    e.line.computeLineDistances();                             // 虛線間距要跟著重算
+    e.line.geometry.setDrawRange(0, whole ? n : i + 1);        // 細線有 drawRange 可以直接切
+    e.line.computeLineDistances();
   }
 
   /** 這一組有幾條逃生動線 */
@@ -1273,7 +1566,8 @@ export class Viewer {
    * index 沒給就隨機挑一條（avoidCurrent = 避開剛剛那一條）。回傳挑到的索引；沒有動線資料回 -1。
    */
   playRoute(name, {
-    index = null, avoidCurrent = true, duration = 2, onDone = null,
+    index = null, avoidCurrent = true, avoid = -1, duration = 2, onDone = null,
+    whole = false,          // true = 整條路一開始就畫出來，只有線頭那顆亮點在跑
     shot = null, shotBlend = 0.8,
     camHold = 0.5,          // 鏡頭在每個關鍵影格停幾秒（0 = 不停，一路滑過去）
   } = {}) {
@@ -1281,8 +1575,12 @@ export class Viewer {
     if (!set?.groups.length) return -1;
     let i = index;
     if (i == null) {
-      let pool = set.groups.map((_, k) => k).filter((k) => !(avoidCurrent && k === set.cur));
-      if (!pool.length) pool = set.groups.map((_, k) => k);     // 只有一條時照樣播那一條
+      // avoid = 呼叫端指定要避開的那一條（首頁的「切換」用：避開待機正在冒煙／剛剛跑過的那一條）；
+      // avoidCurrent = 避開這一組上一次播的那一條。兩個都排除之後沒得挑就逐步放寬。
+      const all = set.groups.map((_, k) => k);
+      let pool = all.filter((k) => k !== avoid && !(avoidCurrent && k === set.cur));
+      if (!pool.length) pool = all.filter((k) => k !== avoid);
+      if (!pool.length) pool = all;                             // 只有一條時照樣播那一條
       i = pool[Math.floor(Math.random() * pool.length)];
     }
     i = Math.max(0, Math.min(set.groups.length - 1, i));
@@ -1290,7 +1588,7 @@ export class Viewer {
     set.recent = [i, ...set.recent].slice(0, 2);
     set.groups.forEach((rg, k) => { rg.visible = k === i; });
     const e = set.entries[i];
-    this._drawRouteAt(e, 0);
+    this._drawRouteAt(e, 0, whole);
     if (set.runner) { set.runner.group.position.copy(e.tip); set.runner.group.visible = true; }
 
     // 這一條動線自己的運鏡（七個狀態共用 enterState 那套規則）
@@ -1303,7 +1601,7 @@ export class Viewer {
     const dur = typeof duration === 'function'
       ? duration(i, e.total, set.entries.map((x) => x.total), cam?.total ?? 0)
       : duration;
-    set.play = { i, t0: this.clock.getElapsedTime(), dur: Math.max(0.1, dur), onDone, done: false };
+    set.play = { i, t0: this.clock.getElapsedTime(), dur: Math.max(0.1, dur), onDone, done: false, whole };
     if (keys) {
       set.play.keys = keys;
       set.play.cam = cam;
@@ -1315,47 +1613,214 @@ export class Viewer {
   }
 
   /* ---------- 待機時的起火點：紅色閃點 + 紅色煙霧（不畫路徑） ----------
-     隨機挑一條動線的**起點**當起火位置。路徑本身不顯示，等按了按鈕才跑。 */
+     在**離鏡頭最近的幾條**動線的**起點**裡挑一個當起火位置，每一拍換一個（節拍跟著擺盪走）；
+     下一顆會在舊的熄掉前 IDLE_FIRE.overlap 秒就先冒出來，所以交接時**兩處同時在燒**。
+     為了並存，起火點是**兩格輪流用**（fire.slots）。路徑本身不顯示，等按了按鈕才跑。 */
 
-  /** 顯示待機起火點。index 沒給就隨機挑一條動線；回傳挑到的索引，沒有動線資料回 -1 */
+  /** 顯示待機起火點。index 沒給就從離鏡頭最近的幾條裡隨機挑；回傳挑到的索引，沒有動線資料回 -1 */
   showIdleFire(name, { index = null } = {}) {
     const set = this._routeSets?.[name];
     if (!set?.entries.length) return -1;
     const auto = index == null;
-    const i = auto ? this._nearestStart(set) : Math.max(0, Math.min(set.entries.length - 1, index));
-    if (!set.fire) set.fire = this._makeIdleFire(set);
-    set.fire.group.position.copy(set.entries[i].pts[0]);
-    set.fire.group.visible = true;
-    set.fire.i = i;
-    set.fire.auto = auto;             // auto = 鏡頭轉到哪，起火點就跟到最近的那一條
-    set.fire.next = 0;
+    const beat0 = this._swingBeat(this.clock.getElapsedTime());
+    const i = auto ? this._pickFireStart(set, -1, beat0?.info.pick ?? null)
+      : Math.max(0, Math.min(set.entries.length - 1, index));
+    if (!set.fire) set.fire = { slots: [this._makeFireSlot(set), this._makeFireSlot(set)], cur: 0, i: -1, on: false, auto: true, next: 0 };
+    const t = this.clock.getElapsedTime();
+    const f = set.fire;
+    for (const s of f.slots) { s.group.visible = false; s.until = 0; }   // 重來一次，兩格都先清掉
+    f.cur = 0;
+    const s0 = f.slots[0];
+    s0.i = i;
+    s0.group.position.copy(set.entries[i].pts[0]);
+    s0.group.visible = true;
+    s0.t0 = t;                        // 煙霧從這一刻重新起算
+    s0.until = Infinity;              // 什麼時候收，等下一顆冒出來才決定
+    f.i = i;                          // 「最新的那一顆」標在哪一條（idleFireRoute 用）
+    f.on = true;                      // 待機起火點整體開著
+    f.auto = auto;                    // auto = 到時間就在離鏡頭最近的那幾條裡重挑
+    f.next = t + IDLE_FIRE.every;     // 沒在擺盪時的退路
+    f.beat = beat0?.id ?? null;       // 目前踩在哪一拍（進場這一拍不再補發起火點）
+    const info = beat0?.info ?? SWING_BEATS[0];
+    f.info = info;
+    for (const s of f.slots) { s.dot.core.material.opacity = 1; }   // 上一輪可能停在淡出中
+    this._setSlabGreen(!!beat0 && info.green);
+    this.onIdleFire?.(i);             // 第一顆也算「新的起火點」
+    // 進場先發一次 beat（first=true）：外面拿去把標語點亮，但按鈕不抽
+    this.onSwingBeat?.({ ...info, dur: beat0?.dur ?? IDLE_FIRE.every, first: true });
     return i;
   }
 
-  /** 目前鏡頭離哪一條動線的起點最近。cur 有給的話要近一成以上才換，免得兩點差不多時一直跳 */
-  _nearestStart(set, cur = -1) {
-    let best = cur, bestD = Infinity, curD = Infinity;
-    for (let i = 0; i < set.entries.length; i++) {
-      set.root.localToWorld(_v8.copy(set.entries[i].pts[0]));
-      const d = this.camera.position.distanceToSquared(_v8);
-      if (i === cur) curD = d;
-      if (d < bestD) { bestD = d; best = i; }
+  /** 挑一條動線的起點當起火位置，回傳索引。
+      pick = 指定可以用哪幾條（0 起算的索引陣列，見 SWING_BEATS）；沒給就退回
+      「離鏡頭最近的 IDLE_FIRE.pool 條裡隨機」。
+      cur 有給就把它排除掉（可選的只剩它自己時還是回它 —— 例如點 2 只綁一條）。 */
+  _pickFireStart(set, cur = -1, pick = null) {
+    const n = set.entries.length;
+    if (!n) return -1;
+    let pool;
+    if (pick?.length) {
+      pool = pick.filter((i) => i >= 0 && i < n);
+      if (!pool.length) pool = [...Array(n).keys()];         // 指定的都超出範圍就全部都能挑
+    } else {
+      const near = [];
+      for (let i = 0; i < n; i++) {
+        set.root.localToWorld(_v8.copy(set.entries[i].pts[0]));
+        near.push({ i, d: this.camera.position.distanceToSquared(_v8) });
+      }
+      near.sort((a, b) => a.d - b.d);
+      pool = near.slice(0, Math.min(IDLE_FIRE.pool, n)).map((e) => e.i);
     }
-    return (cur >= 0 && bestD > curD * 0.81) ? cur : best;   // 0.81 = 距離差一成
+    if (cur >= 0 && pool.length > 1) pool = pool.filter((i) => i !== cur);
+    return pool[Math.floor(Math.random() * pool.length)];
   }
 
   hideIdleFire(name) {
+    // 離開待機，樓梯一定要變回白色。**不要只呼叫 _setSlabGreen(false)** ——
+    // 它有「狀態沒變就不做事」的早退，而材質是被每幀的 _updateStairGreen 直接寫進去的，
+    // 兩者一旦不同步就會留下一座綠樓梯。這裡直接強制重畫。
+    this._slabGreen = false;
+    this._applyModelLook();
     const f = this._routeSets?.[name]?.fire;
-    if (f) f.group.visible = false;
+    if (!f) return;
+    f.on = false;
+    f.beat = null;
+    f.info = null;
+    for (const s of f.slots) { s.group.visible = false; s.until = 0; s.dot.core.material.opacity = 1; }
   }
 
-  /** 待機起火點現在標在哪一條動線上（沒顯示回 -1） */
+  /** 現在踩在時間軸的哪一拍。沒在擺盪回 null。
+      id   一路往上加的編號（拿來判斷「換拍了沒」）
+      info SWING_BEATS 裡那一筆
+      dur  這一拍到下一拍有多久（秒）—— 時間上不等距，標語的漸強要照這個長度
+      back 回程走到幾成（0~1，正程時是 0）—— 淡出和綠樓梯都用它 */
+  _swingBeat(t) {
+    const w = Math.abs(this.controls.autoRotateSpeed) * 0.9;
+    if (!this.swing?.on || !(w > 1e-4)) return null;
+    const TAU = 2 * Math.PI;
+    const th = (t - (this.swing.t0 ?? 0)) * w;
+    const cyc = Math.floor(th / TAU);
+    const r = th - cyc * TAU;
+    let i = 0;
+    for (let k = SWING_BEATS.length - 1; k >= 0; k--) if (r >= SWING_BEATS[k].th) { i = k; break; }
+    const next = i + 1 < SWING_BEATS.length ? SWING_BEATS[i + 1].th : TAU;
+    return {
+      id: cyc * SWING_BEATS.length + i,
+      info: SWING_BEATS[i],
+      dur: (next - SWING_BEATS[i].th) / w,
+      back: r >= Math.PI ? (r - Math.PI) / Math.PI : 0,
+    };
+  }
+
+/** 擺盪時間軸那 6 拍**各**多長（秒），照 SWING_BEATS 的順序。
+      給「沒在擺盪的狀態」（通關的綠色介面）拿去複製同一組節奏用 ——
+      速度取**這個場景存檔的擺盪速度**，不是當下的鏡頭速度（綠色介面是在自轉，速度不一樣）。 */
+  swingBeatSeconds(name = this.sceneName) {
+    const sp = Math.abs(this.getSavedView(name)?.speed ?? this.controls.autoRotateSpeed);
+    const w = sp * 0.9;                                   // 和 _swingBeat 同一條換算
+    if (!(w > 1e-4)) return SWING_BEATS.map(() => IDLE_FIRE.every);
+    const TAU = 2 * Math.PI;
+    return SWING_BEATS.map((b, i) => {
+      const next = i + 1 < SWING_BEATS.length ? SWING_BEATS[i + 1].th : TAU;
+      return (next - b.th) / w;
+    });
+  }
+
+  /** 這一拍多長（秒）。標語的漸強用它，所以漸強會跟著這一段的實際長度走。
+      沒在擺盪就回 IDLE_FIRE.every */
+  idleFirePeriod() {
+    return this._swingBeat(this.clock.getElapsedTime())?.dur ?? IDLE_FIRE.every;
+  }
+
+  /** 換一顆新的起火點。回傳挑到的動線索引。
+      keepPrev=false ＝**舊的立刻收掉**，不要陪跑 —— 回程淡出的那一顆已經淡到看不見了，
+      讓它陪跑的話，新的一拍把淡出係數重設成 1，它會整顆「復活」0.25 秒才消失。 */
+  _spawnIdleFire(set, t, pick = null, keepPrev = true) {
+    const fire = set.fire;
+    const prev = fire.slots[fire.cur];
+    if (keepPrev) prev.until = t + IDLE_FIRE.overlap;   // 舊的還要陪跑這麼久
+    else { prev.group.visible = false; prev.until = 0; }
+    fire.cur = 1 - fire.cur;
+    const s = fire.slots[fire.cur];
+    const n = this._pickFireStart(set, prev.i, pick);   // 避開還在燒的那一條
+    s.i = n;
+    fire.i = n;
+    s.group.position.copy(set.entries[n].pts[0]);
+    s.group.visible = true;
+    s.t0 = t;                                    // 煙霧重新起算，不要一亮就是一柱冒好的煙
+    s.until = Infinity;                          // 等下一顆冒出來才決定什麼時候收
+    this.onIdleFire?.(n);
+    return n;
+  }
+
+  /** 整座樓梯（連框線）顯示／隱藏 */
+  _setStairVisible(on) {
+    for (const o of this._stairMeshes ?? []) o.visible = !!on;
+  }
+
+  /** 綠色樓梯的發光、「碰到點閃一下」和「消失前閃三下」。
+      q = 回程走到幾成（0~1，0 = 剛到點 4，1 = 回到點 1），每幀呼叫。
+      閃的時候是**硬跳**（綠 ↔ 回到平常的白），不做內插 —— 跟按鈕的雜訊抽動同一個路數，
+      柔和地淡進淡出就變成呼吸燈，不是壞掉的訊號了。 */
+  _updateStairGreen(q) {
+    const m = this._blueprintMats;
+    if (!m?.stair) return;
+    const { glow, swell, blip, blinkAt, blinks, duty, dim } = STAIR_GREEN;
+    // 外溢強度 b：0 = 乾淨，1 = 糊到最開。一次抖動就是「快速衝出去、慢慢收回來」。
+    const pulse = (u) => (u < 0.32 ? u / 0.32 : Math.max(0, 1 - (u - 0.32) / 0.68));
+    let b = 0;
+    // 這一下是第幾抖（只有末段的連抖要編號）。號碼一變就發一次 onStairBlink，
+    // 「展示逃生動線」按鈕靠它跟樓梯同步 —— 所以按鈕在快回到點 1 的時候，
+    // 抽動的頻率會完全等於樓梯連抖的頻率。
+    let blinkId = null;
+    if (q >= blinkAt) {
+      // 消失前的連抖（blinks 次）
+      const u = (q - blinkAt) / Math.max(1e-4, 1 - blinkAt);
+      const c = Math.min(blinks - 1e-6, u * blinks);
+      const f = c - Math.floor(c);
+      const d = duty[Math.floor(c) % duty.length];
+      if (f < d) { b = pulse(f / d); blinkId = Math.floor(c) * 2; }
+      else if (f > 0.82 && f < 0.92) {                                     // 收尾再抖一小下
+        b = 0.55 * pulse((f - 0.82) / 0.1);
+        blinkId = Math.floor(c) * 2 + 1;
+      }
+    } else {
+      // 碰到點（4 / 3 / 2）就抖一下
+      for (const q0 of STAIR_BLIPS) {
+        if (q >= q0 && q < q0 + blip) { b = pulse((q - q0) / blip); break; }
+      }
+    }
+    if (blinkId !== this._stairBlinkId) {
+      this._stairBlinkId = blinkId;
+      if (blinkId !== null) this.onStairBlink?.();
+    }
+    this._setStairVisible(true);
+    this._setStairSmear(b);
+    const green = css('--exit', '#3dffa0');
+    const up = Math.min(1, q / Math.max(1e-4, swell));          // 前 swell 那段把光推上去
+    m.stair.color.set(0x000000);                                // diffuse 壓黑：畫面上只剩自發光，不會被打光洗白
+    m.stair.emissive.set(green);
+    // 外溢的時候本體淡掉一點，看起來才像「訊號散開」而不是「多了幾個影子」
+    m.stair.emissiveIntensity = glow * (0.35 + 0.65 * up) * (1 - dim * b);
+  }
+
+  /** 樓梯轉綠 —— 點 4 那一段用。實際上色在 _applyModelLook()（只動 stair 材質，樓板不變） */
+  _setSlabGreen(on) {
+    if (!on) this._stairBlinkId = null;             // 下一輪回程重新從第一抖算起
+    if (this._slabGreen === !!on) return;
+    this._slabGreen = !!on;
+    this._applyModelLook();
+  }
+
+  /** 待機起火點現在標在哪一條動線上（沒開回 -1）。回的是**最新的那一顆**——
+      交接的那一秒有兩處在燒，按下按鈕要跑新的那一條。看的是 on 不是 visible。 */
   idleFireRoute(name) {
     const f = this._routeSets?.[name]?.fire;
-    return f?.group.visible ? f.i : -1;
+    return f?.on ? f.i : -1;
   }
 
-  _makeIdleFire(set) {
+  /** 一格起火點（紅點 + 一團煙）。兩格輪流用，交接時才能兩處同時燒 */
+  _makeFireSlot(set) {
     const g = new THREE.Group();
     const dot = this._makeDot([0, 0, 0], 0xff3b2a, { big: true });   // 起火點：大紅點
     g.add(dot.group);
@@ -1363,7 +1828,7 @@ export class Viewer {
     for (const p of smoke.parts) g.add(p.sprite);
     g.visible = false;
     set.root.add(g);
-    return { group: g, dot, smoke, i: -1 };
+    return { group: g, dot, smoke, i: -1, t0: 0, until: 0 };
   }
 
   /** 紅色煙霧（卡通版）：一顆一顆的雲朵，**啵一下彈出來**、邊飄邊轉、最後才淡掉。
@@ -1391,7 +1856,7 @@ export class Viewer {
     return { parts, rise, spread, life, opacity };
   }
 
-  _updateSmoke(sm, t) {
+  _updateSmoke(sm, t, fade = 1) {
     for (const p of sm.parts) {
       const age = ((t / sm.life) + p.phase) % 1;
       const s = p.sprite;
@@ -1409,7 +1874,7 @@ export class Viewer {
       s.scale.setScalar(p.size * grow * Math.max(0.05, pop));
       s.material.rotation = p.spin * age * 1.4;          // 邊飄邊轉
       // 透明度：**下紅上透**。底下濃、越飄越淡，到頂就沒了（開頭很短的淡入避免硬跳出來）
-      s.material.opacity = sm.opacity * Math.min(1, age / 0.06) * Math.pow(1 - age, 0.75);
+      s.material.opacity = sm.opacity * Math.min(1, age / 0.06) * Math.pow(1 - age, 0.75) * fade;
     }
   }
 
@@ -1423,18 +1888,33 @@ export class Viewer {
   }
 
   /** 在一組路線集裡隨機顯示一條（避開最近兩條），其餘隱藏 */
+  /** 自動輪播換下一條（第一頁）。**用洗牌袋，不是每次亂數挑**：
+      把所有動線洗成一輪、一條一條發完再洗下一輪，而且下一輪的第一條不會等於上一輪的最後一條。
+
+      這樣有兩個保證：
+        1. **永遠不會連兩次同一條**
+        2. **每 n 條就一定把每條都跑過一次** —— 純亂數做不到這件事，
+           就算避開最近兩條，一個 10 秒時段（5 格）裡照樣可能出現 `0 1 4 3 1` 這種
+           同一條跑兩次、另一條完全沒出現的情況。 */
   _pickRouteInSet(set) {
     const n = set.groups.length;
     if (!n) return;
-    const avoid = set.recent;
-    let pool = [];
-    for (let k = 0; k < n; k++) if (!avoid.includes(k)) pool.push(k);
-    if (!pool.length) for (let k = 0; k < n; k++) if (k !== set.cur) pool.push(k);
-    if (!pool.length) pool = [...Array(n).keys()];
-    const i = pool[Math.floor(Math.random() * pool.length)];
+    if (!set.bag?.length) set.bag = this._shuffledBag(n, set.cur);
+    const i = set.bag.pop();
     set.cur = i;
-    set.recent = [i, ...avoid].slice(0, 2);
     set.groups.forEach((rg, k) => { rg.visible = k === i; });
+  }
+
+  /** 0…n-1 洗成一袋（Fisher–Yates）。
+      ⚠️ 取的時候是 pop()，所以**陣列最後一個才是下一條** —— 要避開的是它，不是第 0 個。 */
+  _shuffledBag(n, avoidNext = -1) {
+    const a = [...Array(n).keys()];
+    for (let k = n - 1; k > 0; k--) {
+      const j = Math.floor(Math.random() * (k + 1));
+      [a[k], a[j]] = [a[j], a[k]];
+    }
+    if (n > 1 && a[n - 1] === avoidNext) [a[n - 1], a[0]] = [a[0], a[n - 1]];
+    return a;
   }
 
   /** 圓點：回傳 {group, core, halo, light}，由呼叫端決定要掛到哪個動畫清單；big=true 加大 */
@@ -1456,6 +1936,31 @@ export class Viewer {
     const light = new THREE.PointLight(color, 14, big ? 14 : 10, 2);
     g.add(light);
     return { group: g, core, halo, light };
+  }
+
+  /** 線頭上「正在逃生的人」：白色的逃生標誌小人。
+      用 Sprite 而不是平面 —— 鏡頭在動線上會轉來轉去，平面轉到側面就變成一條線了。 */
+  _makeRunner() {
+    const g = new THREE.Group();
+    // 光暈先畫（相加混色、不寫深度），本體再蓋上去
+    const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: runnerGlowTexture(), color: 0xffffff,
+      transparent: true, opacity: RUNNER.glowOp, depthWrite: false,
+      blending: THREE.AdditiveBlending,        // depthTest 保持預設（吃深度）—— 本體被樓板擋住時，光暈要一起被擋，不然會看到一團沒有人的光
+    }));
+    glow.scale.setScalar(RUNNER.size * RUNNER.glow);   // 貼圖裡本體縮了 1/glow，這裡放大回來剛好對齊
+    glow.renderOrder = 3;
+    g.add(glow);
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: runnerTexture(), color: 0xffffff,
+      transparent: true, depthWrite: false,      // 不寫深度，才不會把後面的動線切掉
+    }));
+    sprite.scale.setScalar(RUNNER.size);
+    sprite.renderOrder = 4;
+    g.add(sprite);
+    const light = new THREE.PointLight(0xffffff, RUNNER.light, 12, 2);
+    g.add(light);
+    return { group: g, sprite, glow, light };
   }
 
   /** 主題（<html data-theme>）換掉之後重新套用場景配色 */
@@ -1500,6 +2005,14 @@ export class Viewer {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h, false);
+    this._syncLineRes();
+  }
+
+  /** 粗線的寬度是「幾個螢幕像素」，所以材質要知道畫布多大；換視窗大小一定要重設，不然粗細會跑掉 */
+  _syncLineRes() {
+    if (!this._lineMats?.length) return;
+    this.renderer.getSize(_r2);
+    for (const m of this._lineMats) m.resolution.copy(_r2);
   }
 
   start() {
@@ -1539,28 +2052,55 @@ export class Viewer {
                 this._lerpView(p.from, onPath, bk * bk * (3 - 2 * bk));
               }
             }
-            this._drawRouteAt(e, k);
+            this._drawRouteAt(e, k, p.whole);
             if (set.runner) set.runner.group.position.copy(e.tip);
             if (tau >= 1 && !p.done) { p.done = true; const cb = p.onDone; p.onDone = null; cb?.(); }
           }
         } else if (t < set.gate) {                        // 載入後第一秒：全部隱藏
           if (set.slot !== -1) { set.slot = -1; set.groups.forEach((gr) => { gr.visible = false; }); }
-        } else {                                          // 之後每 2 秒換一條
-          const slot = Math.floor((t - set.t0) / 2.0);
-          if (slot !== set.slot) { set.slot = slot; this._pickRouteInSet(set); }
+        } else {                                          // 之後每 ROUTE_SLOT 秒換一條
+          const slot = Math.floor((t - set.t0) / ROUTE_SLOT);
+          // 跟倒數連動的那一組：**這個時段剩下的時間不夠跑完整一格就不要換了**，
+          // 讓上一條多留一下就好 —— 五條變四條沒關係，有一條閃過去才難看。
+          const fits = !set.phase || t + ROUTE_SLOT <= (this._phaseEnd ?? Infinity) + 1e-3;
+          if (slot !== set.slot && fits) { set.slot = slot; this._pickRouteInSet(set); }
         }
         const fire = set.fire;                          // 待機起火點：紅點閃 + 煙霧飄
-        if (fire?.group.visible) {
-          if (fire.auto && t > fire.next) {            // 跟著鏡頭換最近的起火點
-            fire.next = t + 0.2;
-            const n = this._nearestStart(set, fire.i);
-            if (n !== fire.i) { fire.i = n; fire.group.position.copy(set.entries[n].pts[0]); }
+        if (fire?.on) {
+          if (fire.auto) {
+            const beat = this._swingBeat(t);
+            fire.back = beat?.back ?? 0;
+            if (beat) {
+              // 踩到時間軸的下一個點了
+              if (beat.id !== fire.beat) {
+                const wasFading = !!fire.info?.green;  // 上一拍在回程＝那顆已經淡掉了
+                fire.beat = beat.id;
+                fire.info = beat.info;
+                this._setSlabGreen(beat.info.green);   // 點 4 起樓梯轉綠，一路綠到回點 1
+                // 只有正程的點 1/2/3 換新的起火點（各自綁定的動線），點 4 之後整個回程都維持那一顆
+                if (beat.info.pick) this._spawnIdleFire(set, t, beat.info.pick, !wasFading);
+                this.onSwingBeat?.({ ...beat.info, dur: beat.dur, first: false });
+              }
+            } else if (t > fire.next) {
+              // 沒在擺盪：退回固定秒數，只換起火點
+              this._spawnIdleFire(set, t);
+              fire.next = t + IDLE_FIRE.every;
+            }
           }
-          fire.dot.core.scale.setScalar(0.85 + 0.35 * bk);
-          fire.dot.halo.scale.setScalar(1.1 + 0.9 * bk);
-          fire.dot.halo.material.opacity = 0.12 + 0.4 * bk;
-          fire.dot.light.intensity = 6 + 30 * bk;
-          this._updateSmoke(fire.smoke, t);
+          // 整個回程（點 4 → 點 1）那顆起火點慢慢淡掉，到點 1 剛好不見，然後新的一顆冒出來
+          const q = fire.back ?? 0;
+          const fk = fire.info?.green ? Math.max(0, 1 - q) : 1;
+          if (fire.info?.green) this._updateStairGreen(q);   // 綠樓梯：發光 + 碰到點閃一下 + 消失前閃三下
+          for (const s of fire.slots) {
+            if (!s.group.visible) continue;
+            if (t > s.until) { s.group.visible = false; continue; }   // 陪跑結束
+            s.dot.core.scale.setScalar(0.85 + 0.35 * bk);
+            s.dot.core.material.opacity = fk;
+            s.dot.halo.scale.setScalar(1.1 + 0.9 * bk);
+            s.dot.halo.material.opacity = (0.12 + 0.4 * bk) * fk;
+            s.dot.light.intensity = (6 + 30 * bk) * fk;
+            this._updateSmoke(s.smoke, t - s.t0, fk);
+          }
         }
         for (const b of set.startDots) {                  // 起點閃爍（第一頁跟倒數變色，首頁固定紅）
           if (b.stops) {
@@ -1650,6 +2190,10 @@ export class Viewer {
       this.scenes = null;
       this.fires = [];
       this.routes = [];
+      this._lineMats = [];
+      this._stairMeshes = null;   // 換模型就重新認樓梯、重新做殘影
+      this._stairGhosts = null;
+      this._stairBase = null;
     }
     for (const child of [...this.modelRoot.children]) {
       this.modelRoot.remove(child);
