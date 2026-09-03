@@ -58,13 +58,16 @@ const IDLE_FIRE = { overlap: 0.25, pool: 3, every: 4.75 };   // 節拍改由 SWI
     所以畫到哪裡只要更新一次。
     width / halo 的單位是**螢幕像素**（拉遠拉近都一樣粗，要靠 material.resolution，見 _syncLineRes）；
     dash / gap 是模型單位（數字越小虛線越密）。 */
-/** 前言／結語頁替動線加的**覆蓋層**：陣列裡每一筆就是在原本的細線上再疊一層。
-    width 是螢幕像素、opacity 是相加混色的濃度，**由粗到細往上疊** ——
-    粗的負責散開來的光暈，細的貼著原本那條線把芯提亮。
-    覺得動線在那兩頁太暗就加一筆或把 opacity 調高，**不要去動模型的壓淡**。 */
+/** 前言／結語頁替動線加的**覆蓋層**：陣列裡每一筆就是在原本的細線上再疊一層，
+    width 是螢幕像素、**由粗到細往上疊**。
+    ⚠️ add（相加混色）只給**光暈**用。芯要 add:false —— 相加混色會一路往白色堆，
+       疊到夠亮的時候綠色早就被洗掉了（實測看起來就是一條白線，看不出是綠的）。
+       芯改成一般混色、opacity 拉滿，顏色就是動線原本的顏色，不會偏白。
+    ⚠️ 芯的 width 就是**看起來的線寬**。光暈的 opacity 壓低（0.2 上下）才是暈開的感覺，
+       調太高會變成一條粗線。 */
 const ROUTE_BOOST = [
-  { width: 7,   opacity: 0.55 },      // 外圈散光
-  { width: 2.6, opacity: 0.75 },      // 貼著細線的芯
+  { width: 8,   opacity: 0.16, add: true  },   // 外圈光暈：暈開就好，不要有明顯的邊
+  { width: 3,   opacity: 1,    add: false },   // 實心的芯：這條決定看起來多粗、什麼顏色
 ];
 
 /** 前言／結語頁「只壓建物、不壓動線」的畫圖順序：
@@ -1577,7 +1580,8 @@ export class Viewer {
             color: lineColor, linewidth: b.width, dashed: true,
             dashSize: 0.7, gapSize: 0.45,                        // 跟細線同一組虛線節奏
             transparent: true, opacity: b.opacity,
-            depthWrite: false, blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            blending: b.add ? THREE.AdditiveBlending : THREE.NormalBlending,
           });
           this._lineMats.push(bm);
           const boost = new Line2(bg, bm);
