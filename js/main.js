@@ -43,6 +43,7 @@ const pageEls = new Map(
    這一頁是**主控端**：只送不收，Pad 只收不送。走 WebSocket（js/sync.js → server.mjs 的 /ws）。
    ⚠️ 不能用 localStorage —— 那個只在同一台瀏覽器裡有效，跨裝置傳不過去。
    ⚠️ 頁面代號跟給 Pad 的場景名不一樣（first / home 是歷史包袱），這張表就是兩邊的對照。 */
+const PLAN_DIM = 0.18;                      // 前言／結語頁的平面圖建物壓到幾成（動線不受影響）
 const SCENE = { intro: 'intro', first: 'golden30', home: 'aiRoute', outro: 'outro' };
 const sync = createSync({ role: 'display' });
 
@@ -257,9 +258,11 @@ function goto(id) {
     viewer.setScene(id === 'home' ? 'tower' : 'flat');
     // 只有前言頁把動線收起來（只留建物線當底圖）；第一頁和結語頁都要看得到動線
     viewer.setRoutesVisible('flat', id !== 'intro');
-    // 前言／結語的平面圖是用 CSS 把整張 canvas 壓淡的（見 css 的 .intro__plan canvas）。
-    // 那樣連動線也會一起淡掉，所以這兩頁**替動線單獨開一層光暈**，模型完全不碰。
-    viewer.setRouteBoost('flat', id === 'intro' || id === 'outro');
+    // 前言／結語只把**建物**壓淡，動線維持原本的亮度（veil 夾在中間，見 viewer.setPlanDim）。
+    // 再替動線疊幾層光暈，讓它在淡掉的底圖上更好認。模型的材質完全不碰。
+    const faded = id === 'intro' || id === 'outro';
+    viewer.setPlanDim(faded ? PLAN_DIM : 1);
+    viewer.setRouteBoost('flat', faded);
     viewer.mount(host);
     if (id === 'intro') startIntroSpark();       // 進前言頁：換一條起火點，之後每 5 秒再換
     else stopIntroSpark();

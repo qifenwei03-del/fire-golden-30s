@@ -66,6 +66,11 @@ const ROUTE_BOOST = [
   { width: 7,   opacity: 0.55 },      // 外圈散光
   { width: 2.6, opacity: 0.75 },      // 貼著細線的芯
 ];
+
+/** 前言／結語頁「只壓建物、不壓動線」的畫圖順序：
+    建物先畫 → 蓋一層 veil 把**已經畫好的東西**整片壓淡 → 動線最後畫上去。
+    動線在 veil 之後，所以完全不受壓淡影響（見 setPlanDim）。 */
+const PLAN_LAYER = { veil: 5, route: 6, boost: 7 };
 const ROUTE_LINE = { width: 3.4, halo: 12, haloOpacity: 0.2, dash: 0.32, gap: 0.2 };
 
 /** 待機的「擺盪時間軸」：**1 和 4 是擺幅的兩端，2 和 3 把中間平分成三段**。
@@ -1435,6 +1440,53 @@ export class Viewer {
       這支就是**替動線單獨加一層粗的相加光暈**，只在那兩頁打開 —— 模型的材質完全不碰。
       ⚠️ 光暈是 _buildRoutes 就先做好放著（set.boost），這裡只切 visible。
          現做的話 Line2 要重新算 lineDistances 和畫布解析度，切頁會頓一下。 */
+  /** 前言／結語頁把平面圖的**建物**壓淡到 k（1 = 原本亮度，0.18 = 現在用的）。
+      逃生動線**不會**跟著淡掉。
+
+      做法是在建物和動線中間插一張蓋滿畫面的 veil，用自訂混色把**已經畫好的畫面**
+      整片乘上 k（rgb 和 alpha 一起乘，等同於「對這一半的畫面下 CSS opacity」），
+      動線排在 veil 後面才畫，所以維持原本的亮度。
+
+      ⚠️ **不要改回用 CSS 壓整張 canvas** —— 建物和動線畫在同一張畫布上，
+         CSS 的 opacity 會把動線一起壓掉，而且是**硬上限**：canvas 壓到 .18 之後，
+         不管在裡面把動線加多亮，最多也只有 18% 的亮度（實測疊兩層光暈只從 9.27 進步到 10.74）。
+      ⚠️ **也不要改回去調模型的材質** —— 牆改成半透明的話後面的框線會全部透出來、
+         整張圖會糊；把顏色往背景色 lerp 又會整棟發黑。兩種都試過了。
+      這支從頭到尾沒有碰任何一支模型材質，離開那兩頁只要 setPlanDim(1) 就完全復原。 */
+  setPlanDim(k = 1) {
+    this._planDim = k;
+    const on = k < 0.999;
+    if (!on && !this._planVeil) return;             // 沒壓過也不用壓，veil 連建都不用建
+    const veil = (this._planVeil ??= this._makePlanVeil());
+    veil.material.uniforms.a.value = k;
+    veil.visible = on;
+  }
+
+  /** setPlanDim 用的那張 veil：蓋滿整個畫面、把 destination 乘上 a。
+      ⚠️ 頂點直接吐 clip space（不吃相機矩陣），所以要關掉 frustumCulled，
+         不然相機轉一下它就被剔除、壓淡整片消失。
+      ⚠️ 混色是 dst = dst * srcAlpha（src 完全不加進去），**rgb 和 alpha 要分別設**，
+         alpha 沒跟著乘的話畫布的透明度不對，底下 CSS 的漸層會透不出來。 */
+  _makePlanVeil() {
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { a: { value: 1 } },
+      vertexShader: 'void main(){ gl_Position = vec4(position.xy, 0.0, 1.0); }',
+      fragmentShader: 'uniform float a; void main(){ gl_FragColor = vec4(0.0, 0.0, 0.0, a); }',
+      transparent: true, depthTest: false, depthWrite: false,
+      blending: THREE.CustomBlending,
+      blendEquation: THREE.AddEquation,
+      blendSrc: THREE.ZeroFactor,      blendDst: THREE.SrcAlphaFactor,
+      blendEquationAlpha: THREE.AddEquation,
+      blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.SrcAlphaFactor,
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+    mesh.frustumCulled = false;
+    mesh.renderOrder = PLAN_LAYER.veil;
+    mesh.visible = false;
+    this.scene.add(mesh);
+    return mesh;
+  }
+
   setRouteBoost(name, on) {
     (this._routeBoost ??= {})[name] = !!on;
     const set = this._routeSets?.[name];
@@ -1509,6 +1561,7 @@ export class Viewer {
           new THREE.LineDashedMaterial({ color: lineColor, dashSize: 0.7, gapSize: 0.45, transparent: true, opacity: 0.95 })
         );
         line.computeLineDistances();
+        line.renderOrder = PLAN_LAYER.route;                     // 一定要排在 veil 後面才不會被壓淡
         this.routes.push(line);                                  // 虛線流動
         rg.add(line);
 
@@ -1529,7 +1582,7 @@ export class Viewer {
           this._lineMats.push(bm);
           const boost = new Line2(bg, bm);
           boost.computeLineDistances();
-          boost.renderOrder = 1 + bi;                            // 粗的先畫，細的疊上去
+          boost.renderOrder = PLAN_LAYER.boost + bi;             // 也要在 veil 後面；粗的先、細的疊上去
           boost.visible = false;
           rg.add(boost);
           (set.boost ??= []).push(boost);

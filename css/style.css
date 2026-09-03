@@ -729,13 +729,9 @@ svg{display:block}
   margin-top:2.4rem;
   width:50rem;height:20rem;
 }
-/* 平面圖只當底圖，壓淡不要跟字搶。
-   ⚠️ 透明度要下在 **canvas** 上，不要下在 .intro__plan 上 —— 紅色起火點是這個框的子元素，
-      壓在框上會連紅點一起變淡。
-   ⚠️ 這樣壓會連逃生動線一起淡掉（動線跟建物畫在同一張 canvas 上）。
-      **解法不是去改模型的材質**（試過，牆一變半透明後面的線就全透出來、整張圖會糊），
-      而是在 3D 那邊替動線單獨加一層粗光暈：js/viewer.js 的 ROUTE_BOOST → setRouteBoost()。 */
-.intro__plan canvas{opacity:.18}
+/* ⚠️ 平面圖的壓淡**不在這裡做**，這裡放 opacity 會連逃生動線一起壓掉
+      （建物和動線畫在同一張 canvas 上），而且會變成亮度的硬上限。
+      改在 3D 那邊把 veil 夾在建物和動線中間：js/main.js 的 PLAN_DIM → viewer.setPlanDim()。 */
 /* 紅色起火點：純 CSS，不動 3D。像雷達鎖定的靶心 —— 實心核心 + 兩圈細環 + 十字準星 + 外圈暈光。
    **位置不是寫死的**：js/main.js 的 placeIntroSpark() 會把隨機一條逃生動線的起點投影下來，
    算成 --sx / --sy（相對平面圖框的百分比）寫進來。整顆的大小用 --spark 一個數字縮放，
