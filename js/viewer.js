@@ -1522,6 +1522,25 @@ export class Viewer {
     return mesh;
   }
 
+  /** 這一組**多久換一條**（秒）。傳 0／不傳就回到預設的 ROUTE_SLOT。
+      前言／結語頁要跟畫面上輪播的文字踩同一個節拍，所以外面會把 CSS 的 --roll 傳進來。
+      ⚠️ 不能只改長度不動起點 —— 那樣第一條會接在上一個節拍剩下的殘量上，跟文字差半拍。
+         所以這裡一併把 t0 對到現在、把 slot 設成 -1（下一幀立刻換一條），
+         文字那邊同時重播動畫，兩邊就從同一個瞬間一起起跑。
+      ⚠️ 回到預設的時候要把 t0 **對回倒數時段的起點**（第一頁那組），
+         不然時段邊界不會落在格子邊界上，又會出現一條只閃過去的。 */
+  setRouteSlot(name, seconds = 0) {
+    const custom = seconds > 0;
+    (this._routeSlot ??= {})[name] = custom ? seconds : 0;
+    const set = this._routeSets?.[name];
+    if (!set) return;                             // 模型還沒載完，記著等 _buildRoutes 之後補
+    set.slotSec = custom ? seconds : ROUTE_SLOT;
+    set.t0 = (!custom && set.phase && this._phaseT0 != null)
+      ? this._phaseT0
+      : this.clock.getElapsedTime();
+    set.slot = -1;
+  }
+
   setRouteBoost(name, on) {
     (this._routeBoost ??= {})[name] = !!on;
     const set = this._routeSets?.[name];
@@ -1719,6 +1738,7 @@ export class Viewer {
     if (phase && this._phaseT0 != null) set.t0 = this._phaseT0;
     set.off = !!this._routesOff?.[name];          // 建好之前就被叫去收起來的話，這裡補上
     if (this._routeBoost?.[name]) this._applyBoost(set, true);
+    if (this._routeSlot?.[name]) this.setRouteSlot(name, this._routeSlot[name]);   // 建好之前就被指定過節拍
     this._routeSets[name] = set;
     this._syncLineRes();                          // 粗線建好就把畫布尺寸餵進去
     this.onRoutesReady?.(name);                   // 模型是非同步載入的，外面要等這一聲才拿得到起點
@@ -2298,14 +2318,15 @@ export class Viewer {
           if (set.slot !== -1) { set.slot = -1; set.groups.forEach((gr) => { gr.visible = false; }); }
         } else if (t < set.gate) {                        // 載入後第一秒：全部隱藏
           if (set.slot !== -1) { set.slot = -1; set.groups.forEach((gr) => { gr.visible = false; }); }
-        } else {                                          // 之後每 ROUTE_SLOT 秒換一條
-          const slot = Math.floor((t - set.t0) / ROUTE_SLOT);
+        } else {                                          // 之後每 slotSec 秒換一條
+          const slotSec = set.slotSec ?? ROUTE_SLOT;
+          const slot = Math.floor((t - set.t0) / slotSec);
           // 跟倒數連動的那一組：**這個時段剩下的時間不夠跑完整一格就不要換了**，
           // 讓上一條多留一下就好 —— 五條變四條沒關係，有一條閃過去才難看。
           // ⚠️ 只有「時段還在跑」的時候才限制。倒數停在別的頁面時 _phaseEnd 會留在過去的時間，
           //    不判斷 live 的話結語頁（也用 flat）的動線會**整組停住不換**。
           const live = this._phaseEnd != null && t < this._phaseEnd;
-          const fits = !set.phase || !live || t + ROUTE_SLOT <= this._phaseEnd + 1e-3;
+          const fits = !set.phase || !live || t + slotSec <= this._phaseEnd + 1e-3;
           if (slot !== set.slot && fits) { set.slot = slot; this._pickRouteInSet(set); }
         }
         const fire = set.fire;                          // 待機起火點：紅點閃 + 煙霧飄

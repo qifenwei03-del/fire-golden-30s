@@ -134,12 +134,22 @@ let introSparkTimer = null;
 /** 把輪播文字的動畫從頭跑一次 —— 讓「換紅點」和「換文字」踩在同一個起點上。
     ⚠️ 要先把 animation 設成 none、強制重排再放開，直接改 class 是不會重播的
        （跟按鈕抽動那邊同一個坑）。 */
-function restartIntroRoll() {
-  const roll = document.querySelector('.page--intro .intro__roll');
+function restartRoll(pageId) {
+  const roll = document.querySelector('.page--' + pageId + ' .intro__roll');
   if (!roll) return;
   for (const k of roll.children) k.style.animation = 'none';
   void roll.offsetWidth;
   for (const k of roll.children) k.style.animation = '';
+}
+const restartIntroRoll = () => restartRoll('intro');
+
+/** 那一頁的文字**幾秒換一段** —— 直接讀 CSS 的 --roll，不要在這邊再寫死一個數字。
+    動線換一條的節拍也吃這個值（見 viewer.setRouteSlot），
+    所以「文字和動線同步」只有 css 裡 --roll 一個地方要改。 */
+function rollSeconds(pageId) {
+  const roll = document.querySelector('.page--' + pageId + ' .intro__roll');
+  const v = roll && parseFloat(getComputedStyle(roll).getPropertyValue('--roll'));
+  return v > 0 ? v : 5;
 }
 
 function startIntroSpark() {
@@ -266,6 +276,12 @@ function goto(id) {
     viewer.mount(host);
     if (id === 'intro') startIntroSpark();       // 進前言頁：換一條起火點，之後每 5 秒再換
     else stopIntroSpark();
+    // 結語頁：動線**多久換一條**要對到上面文字**多久換一段**。
+    // 兩件事得一起重來才會同步 —— 文字的動畫從頭跑一次，動線的格子也歸零。
+    // ⚠️ 頁面是用 opacity 切的、不是 display:none，所以文字的動畫**不會自己重播**。
+    //    不重播的話，進來就是接在上一輪的半途，跟動線永遠對不齊。
+    if (id === 'outro') { restartRoll('outro'); viewer.setRouteSlot('flat', rollSeconds('outro')); }
+    else if (id !== 'intro') viewer.setRouteSlot('flat', 0);   // 回第一頁：格子對回倒數時段
   } else {
     viewer.unmount();
   }
