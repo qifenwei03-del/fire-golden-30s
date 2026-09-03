@@ -1,0 +1,135 @@
+/* =========================================================================
+   住戶端 Pad（pad.html）
+   色票沿用 style.css 的 :root，版面這裡自己來。
+   ⚠️ style.css 的 html{font-size} 是給 1920×1080 看板算的（取 vw/vh 較小者），
+      Pad 直向的時候會算出很小的 rem，所以這裡整支蓋掉，改用 vmin 為基準。
+   ⚠️ 四個狀態（safe / alarm / guide / clear）全部靠 body[data-state] 換，
+      js 只改那一個屬性和幾段文字，不動結構。
+   ========================================================================= */
+html.pad-root, html:has(body.pad){ font-size:clamp(11px, 2.2vmin, 26px); overflow:hidden }
+
+body.pad{
+  --tone:var(--brand-hi);                  /* 這個狀態的主色，下面每個 data-state 各自換掉 */
+  --tone-soft:color-mix(in srgb, var(--tone) 22%, transparent);
+  margin:0;height:100dvh;overflow:hidden;
+  display:flex;flex-direction:column;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background:
+    radial-gradient(120% 80% at 50% 0%, var(--tone-soft), transparent 62%),
+    linear-gradient(180deg, var(--bg-1) 0%, var(--bg-0) 55%, var(--bg-0) 100%);
+  color:var(--ink);
+  transition:background .6s var(--ease);
+  -webkit-user-select:none;user-select:none;
+  -webkit-tap-highlight-color:transparent;
+}
+body.pad[data-state="safe"] { --tone:var(--brand-hi) }
+body.pad[data-state="alarm"]{ --tone:var(--red) }
+body.pad[data-state="guide"]{ --tone:var(--amber) }
+body.pad[data-state="clear"]{ --tone:var(--exit) }
+
+/* ---------- 上下兩條 ---------- */
+.pad__bar,.pad__foot{
+  flex:none;display:flex;align-items:center;justify-content:space-between;
+  padding:1.1rem 1.6rem;
+  font-size:.82rem;letter-spacing:.22em;color:var(--ink-3);
+}
+.pad__foot{justify-content:center;letter-spacing:.3em}
+.pad__brand{font-family:"Oswald",sans-serif}
+
+/* 連線指示：亮點 + 文字。斷線時轉紅並閃爍，現場一眼看得出來是不是還連著 */
+.pad__link{display:flex;align-items:center;gap:.5rem;font-size:.78rem;letter-spacing:.14em}
+.pad__link i{
+  width:.5rem;height:.5rem;border-radius:50%;
+  background:var(--red);box-shadow:0 0 .6rem var(--red);
+  animation:padBlink 1s steps(1,end) infinite;
+}
+.pad__link[data-ok="1"] i{background:var(--exit);box-shadow:0 0 .6rem var(--exit);animation:none}
+.pad__link[data-ok="1"]{color:var(--ink-2)}
+@keyframes padBlink{ 0%,50%{opacity:1} 50.01%,100%{opacity:.15} }
+
+/* ---------- 中間 ---------- */
+.pad__main{
+  flex:1;min-height:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:1.1rem;padding:1rem 1.6rem;text-align:center;
+}
+
+/* 三圈同心的狀態燈。alarm 的時候跳得快、clear 的時候幾乎不動 */
+.pad__beacon{position:relative;width:7.2rem;height:7.2rem;flex:none;margin-bottom:.6rem}
+.pad__beacon i{
+  position:absolute;inset:0;margin:auto;border-radius:50%;
+  border:1px solid var(--tone);opacity:0;
+  animation:padPulse 2.8s var(--ease) infinite;
+}
+.pad__beacon i:nth-child(2){animation-delay:-.93s}
+.pad__beacon i:nth-child(3){animation-delay:-1.86s}
+.pad__beacon::after{
+  content:"";position:absolute;inset:0;margin:auto;
+  width:1.5rem;height:1.5rem;border-radius:50%;
+  background:var(--tone);
+  box-shadow:0 0 1.2rem var(--tone), 0 0 3.4rem color-mix(in srgb, var(--tone) 55%, transparent);
+}
+@keyframes padPulse{
+  0%  { width:1.5rem;height:1.5rem;opacity:.9 }
+  100%{ width:7.2rem;height:7.2rem;opacity:0 }
+}
+body.pad[data-state="alarm"] .pad__beacon i{animation-duration:1.2s}
+body.pad[data-state="alarm"] .pad__beacon i:nth-child(2){animation-delay:-.4s}
+body.pad[data-state="alarm"] .pad__beacon i:nth-child(3){animation-delay:-.8s}
+body.pad[data-state="clear"] .pad__beacon i{animation-duration:4.5s}
+
+.pad__kicker{
+  margin:0;font-size:1.05rem;font-weight:500;letter-spacing:.34em;text-indent:.34em;
+  color:var(--tone);
+}
+.pad__title{
+  margin:0;font-size:4.6rem;font-weight:700;line-height:1.15;letter-spacing:.06em;
+  color:var(--ink);
+  text-shadow:0 0 2.6rem color-mix(in srgb, var(--tone) 45%, transparent);
+}
+/* 警報的時候標題跟著呼吸，但**不要整片閃**——整片閃在 Pad 上很吵、也容易誘發不適 */
+body.pad[data-state="alarm"] .pad__title{ animation:padBreath 1.2s var(--ease) infinite }
+@keyframes padBreath{ 0%,100%{opacity:1} 50%{opacity:.72} }
+
+.pad__sub{
+  margin:0;font-size:1.24rem;font-weight:400;letter-spacing:.1em;line-height:1.7;
+  color:var(--ink-2);max-width:26rem;
+}
+
+/* ---------- 逃生指引（只有 aiRoute 顯示） ---------- */
+.pad__route{width:100%;max-width:30rem;margin-top:.8rem}
+.pad__steps{
+  list-style:none;margin:0;padding:0;
+  display:flex;align-items:stretch;justify-content:center;gap:.5rem;
+}
+.pad__steps li{
+  flex:1;display:flex;flex-direction:column;align-items:center;gap:.5rem;
+  padding:.9rem .4rem;
+  font-size:.92rem;letter-spacing:.08em;color:var(--ink-2);
+  border:1px solid var(--brand-line);border-radius:.5rem;
+  background:color-mix(in srgb, var(--tone) 6%, transparent);
+  position:relative;
+}
+/* 步驟之間的箭頭 */
+.pad__steps li + li::before{
+  content:"";position:absolute;left:-.5rem;top:50%;translate:0 -50%;
+  width:.5rem;height:1px;background:var(--tone);opacity:.6;
+}
+.pad__steps li span{
+  width:1.7rem;height:1.7rem;flex:none;
+  display:grid;place-items:center;border-radius:50%;
+  font-family:"Oswald",sans-serif;font-size:.9rem;
+  color:var(--bg-0);background:var(--ink-3);
+}
+.pad__steps .is-goal{
+  border-color:var(--tone);
+  background:color-mix(in srgb, var(--tone) 14%, transparent);
+  color:var(--ink);
+}
+.pad__steps .is-goal span{background:var(--tone);color:var(--bg-0)}
+.pad__steps .is-goal b{font-size:1.15rem;letter-spacing:.06em}
+
+@media (prefers-reduced-motion:reduce){
+  .pad__beacon i,.pad__link i,body.pad[data-state="alarm"] .pad__title{animation:none}
+  .pad__beacon i{opacity:.35}
+}

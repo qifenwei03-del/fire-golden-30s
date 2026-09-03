@@ -689,6 +689,35 @@ geometry、`MeshBasicMaterial` + `AdditiveBlending`），本體同時淡掉。
 補一筆 `w` = 外框的 `w`、`x: 0`、`s: 1` 就對齊了。
 
 ---
+### 0.31 前言頁（開機的第一頁）
+
+使用者丟了一張設計稿，要「在黃金30秒之前加一頁前言」。做成 `PAGES` 的第一頁（`intro`），
+按 `A` 可以回來。原本是停 6 秒（`INTRO_HOLD`）自動進黃金30秒，使用者後來要求關掉，現在 `INTRO_HOLD = 0`，要自己按 Esc。
+
+**平面圖沿用 3D 的 `flat` 場景**（不是另外做一張圖）—— 跟第一頁共用同一顆 renderer 和同一組存檔鏡頭，
+只是把動線整組收起來（`viewer.setRoutesVisible('flat', false)`）、壓淡到 `opacity:.5` 當底圖，
+紅色起火點另外用純 CSS 畫（`.intro__spark`），不動 3D。
+
+⚠️ **又踩到同一個非同步的坑**：`setRoutesVisible()` 一開始只改 `set.off`，
+但開機時 `goto('intro')` 跑在模型載完之前，`_routeSets.flat` 根本還不存在，
+那一次整個沒作用（實測 `routesOff: false`、動線照樣在跑）。
+修法跟 `setRoutePhase` 的 `_phaseT0` 一樣：**狀態記在 viewer 上（`_routesOff`）**，
+`_buildRoutes` 建好時再套一次。**這個專案凡是「載入前就會被呼叫的 viewer API」都要這樣寫。**
+
+⚠️ 前言頁的編輯器**不要傳 `viewer`**：它跟第一頁共用 `flat` 場景，
+兩個編輯器都會存 `view`，會互相蓋掉對方的鏡頭。前言頁只調物件版面。
+
+版面比例是照設計稿量的（稿 1673px 寬 → ×1.1476 換算到 1920）。
+量完發現第一版整個小了 20～50%，主標從 4.3rem 改成 5.1rem、副標 1.15→1.9rem、結語 1.55→2.25rem。
+⚠️ HUD 框角和標籤兩側的線本來用 `--brand-line`（alpha .22），**縮圖上完全看不見**，
+改成 `color-mix(in srgb, var(--brand) 55%, transparent)` 才看得出來。
+
+⚠️ 預覽窗格的截圖在「模擬視窗尺寸」下會壞掉（整頁被畫到左上角一小塊），
+但 `getBoundingClientRect` 是對的 —— **版面要用量的驗，不要只看截圖**。
+偶爾重載一次就正常，沒有規律。
+
+---
+
 ## 1. 專案是什麼
 
 **火災黃金30秒** — 給展場／看板用的 Three.js 網頁，全螢幕、鍵盤操作、無捲軸。

@@ -217,6 +217,8 @@ body{
 }
 
 svg{display:block}
+/* 只放 <defs>（濾鏡之類）的 svg，不佔版面 */
+.svg-defs{position:absolute;width:0;height:0;overflow:hidden;pointer-events:none}
 
 /* ---------- 頁面容器 ---------- */
 .app{position:relative;width:100vw;height:100vh;overflow:hidden}
@@ -595,6 +597,337 @@ svg{display:block}
 .home__name{
   font-size:3.5rem;font-weight:700;letter-spacing:.06em;line-height:1;
   text-shadow:0 0 2.4rem var(--brand-soft);
+}
+
+/* =========================================================
+   前言頁（PAGE 0，按 I 回來）
+   開機看到的第一頁，停 INTRO_HOLD 秒後自動進「火災黃金30秒」；
+   按任何切頁鍵（Enter / Esc / B / I）都會取消自動跳頁。
+   整頁是**置中的一欄**（不是絕對定位），所以換視窗尺寸不會散掉；
+   細部位置一樣可以進編輯模式（E）調，存在 layout-intro.json。
+   ========================================================= */
+/* ⚠️ .intro__* 是**前言頁和結語頁共用**的一套樣式，不是只有前言在用。
+   兩頁的字級／字距／顏色／平面圖大小完全一樣，只有文案和 data-obj 不同
+   （版面各自存檔：layout-intro.json / layout-outro.json）。 */
+.page--intro,
+.page--outro{
+  display:flex;align-items:center;justify-content:center;
+  padding:2.2rem 2.6rem;
+  /* 底圖：跟另外兩頁同一組 --glow，但**光心放在畫面中間**（那兩頁是從上緣打下來的），
+     再用最底下那層由上到下的漸層讓上下兩端沉下去 */
+  background:
+    /* 第一層 = 暈影，四周壓暗。稿子的邊角比中間深很多，少了這一層整片會很平。
+       ⚠️ **一定要做成 background 的一層，不要另外開一個 ::before**：
+          多一層定位元素就得給 .intro__body 加 position:relative，
+          那會讓它變成子物件的 offsetParent，**編輯模式存的座標基準就整個換掉**，
+          舊的 layout-intro.json 會整批跑位。背景層本來就畫在所有內容底下，不用碰定位。 */
+    radial-gradient(118% 88% at 50% 46%,
+      transparent 42%,
+      color-mix(in srgb, var(--bg-0) 78%, transparent) 78%,
+      var(--bg-0) 100%),
+    radial-gradient(115% 85% at 50% 44%, var(--glow-1), transparent 62%),
+    radial-gradient(70% 55% at 50% 30%, var(--glow-2), transparent 72%),
+    linear-gradient(180deg, var(--bg-0) 0%, var(--bg-1) 46%, var(--bg-0) 100%);
+}
+.intro__body{
+  display:flex;flex-direction:column;align-items:center;
+  width:100%;max-width:76rem;
+}
+
+/* ---------- 四角的 HUD 框角 ---------- */
+.intro__corner{
+  position:absolute;width:3.2rem;height:3.2rem;pointer-events:none;
+  /* 比 --brand-line 濃一點 —— 那支太淡，在投影機／縮圖上會整個消失 */
+  border:1px solid color-mix(in srgb, var(--brand) 55%, transparent);
+}
+.intro__corner--tl{top:1.6rem;left:1.9rem;border-right:0;border-bottom:0}
+.intro__corner--tr{top:1.6rem;right:1.9rem;border-left:0;border-bottom:0}
+.intro__corner--bl{bottom:1.6rem;left:1.9rem;border-right:0;border-top:0}
+.intro__corner--br{bottom:1.6rem;right:1.9rem;border-left:0;border-top:0}
+
+/* 底部一排長短不一的刻度：兩層 repeating-linear-gradient 疊出「不規則」的感覺
+   （單一層的話會是完全等距，看起來像進度條不像儀表） */
+.intro__ticks{
+  position:absolute;left:50%;bottom:2.4rem;transform:translateX(-50%);
+  width:22rem;height:.55rem;pointer-events:none;opacity:.55;
+  background:
+    repeating-linear-gradient(90deg,
+      var(--brand-line) 0 1px, transparent 1px 7px),
+    repeating-linear-gradient(90deg,
+      color-mix(in srgb, var(--brand) 30%, transparent) 0 1px, transparent 1px 23px);
+  -webkit-mask-image:linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent);
+  mask-image:linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent);
+}
+
+/* ---------- 前言 · INTRO ---------- */
+.intro__eyebrow{
+  display:flex;align-items:center;justify-content:center;gap:1.5rem;
+  width:100%;
+}
+.intro__rule{flex:1;max-width:11rem;height:1px;background:linear-gradient(90deg,transparent,color-mix(in srgb, var(--brand) 55%, transparent))}
+.intro__rule + .intro__chip + .intro__rule{background:linear-gradient(90deg,color-mix(in srgb, var(--brand) 55%, transparent),transparent)}
+/* 標籤外面那個上下開口的方框：用 ::before / ::after 各畫一組左右角 */
+.intro__chip{
+  position:relative;flex:none;
+  padding:.68rem 2.6rem;
+  font-size:1.2rem;font-weight:500;letter-spacing:.26em;
+  color:var(--brand-hi);
+  text-shadow:0 0 1.4rem color-mix(in srgb, var(--brand) 45%, transparent);
+}
+.intro__chip::before,.intro__chip::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  border:1px solid color-mix(in srgb, var(--brand) 55%, transparent);
+}
+.intro__chip::before{border-bottom:0;                /* 上半：只留左右上三邊，中間切掉 */
+  -webkit-mask-image:linear-gradient(90deg,#000 0 22%,transparent 22% 78%,#000 78% 100%);
+  mask-image:linear-gradient(90deg,#000 0 22%,transparent 22% 78%,#000 78% 100%);
+}
+.intro__chip::after{border-top:0;
+  -webkit-mask-image:linear-gradient(90deg,#000 0 22%,transparent 22% 78%,#000 78% 100%);
+  mask-image:linear-gradient(90deg,#000 0 22%,transparent 22% 78%,#000 78% 100%);
+}
+
+/* ---------- 主標 ---------- */
+/* 字級／行距／間距都是照設計稿量出來的（稿是 1673px 寬，換算到 1920 要 ×1.1476） */
+.intro__title{
+  margin-top:4.4rem;
+  font-size:5.1rem;font-weight:700;line-height:1.3;letter-spacing:.06em;
+  text-align:center;color:var(--brand-hi);
+  /* 一整句排一行、不換行，三段之間空一格。
+     三段各自包在 <span> / <em> 裡，就是 flex 的三個 item：**中間那段（每一秒）維持原字級，
+     左右兩段用 em 相對縮小**，所以改主標字級時三段會一起等比縮放。
+     要三段之間留空隙就在這裡加 gap（一個數字說了算，不要打全形空白 —— 會受字距影響）。
+     編輯模式凍結之後這個框有固定高度（原本是兩行的高），所以 align-items:center
+     讓單行**在框裡垂直置中**，不然字會貼在框的上緣。
+     ⚠️ 之後如果要改回兩行（加回 <br>），要先把 flex 這幾行拿掉。 */
+  white-space:nowrap;
+  display:flex;align-items:center;justify-content:center;
+  text-shadow:0 0 3rem var(--brand-soft);
+}
+/* 三段大小不一樣，所以**要對齊基線（視覺上就是對齊底部）**，不能用置中 ——
+   置中的話小字會浮在大字的中間，看起來像沒對齊。
+   ⚠️ 為什麼要多包一層 .intro__title-row：外層那個 flex 負責「單行在固定高度的框裡垂直置中」，
+      而單行 flex 容器沒辦法同時做「整行置中」和「item 對齊基線」（align-content 對單行無效，
+      直接把外層改成 baseline 會讓整行貼到框的上緣）。所以分兩層：外層置中、內層對基線。 */
+.intro__title-row{display:flex;align-items:baseline}
+/* 整句都是主色。<em>（「每一秒」）維持主標的字級，左右兩段縮小 —— 用 em 是相對值，
+   改上面的 font-size 三段會一起等比縮放，不用兩邊都改。 */
+.intro__title em{font-style:normal;color:inherit}
+.intro__title-row > span{font-size:.7em}
+
+.intro__lead{
+  margin-top:4.6rem;
+  font-size:1.9rem;font-weight:400;letter-spacing:.08em;color:var(--ink-2);
+  text-align:center;
+}
+
+/* ---------- 平面圖（3D flat 場景，壓得很淡當底圖） ---------- */
+/* 大小就是編輯模式裡 introPlan 這個框的大小 —— 3D 會照框的短邊去框景，
+   所以想讓平面圖更大就把框「加高」（不是加寬）。 */
+.intro__plan{
+  position:relative;
+  margin-top:2.4rem;
+  width:50rem;height:20rem;
+}
+/* 平面圖只當底圖，壓淡不要跟字搶。
+   ⚠️ 透明度要下在 **canvas** 上，不要下在 .intro__plan 上 —— 紅色起火點是這個框的子元素，
+      壓在框上會連紅點一起變淡。
+   ⚠️ 這樣壓會連逃生動線一起淡掉（動線跟建物畫在同一張 canvas 上）。
+      **解法不是去改模型的材質**（試過，牆一變半透明後面的線就全透出來、整張圖會糊），
+      而是在 3D 那邊替動線單獨加一層粗光暈：js/viewer.js 的 ROUTE_BOOST → setRouteBoost()。 */
+.intro__plan canvas{opacity:.18}
+/* 紅色起火點：純 CSS，不動 3D。像雷達鎖定的靶心 —— 實心核心 + 兩圈細環 + 十字準星 + 外圈暈光。
+   **位置不是寫死的**：js/main.js 的 placeIntroSpark() 會把隨機一條逃生動線的起點投影下來，
+   算成 --sx / --sy（相對平面圖框的百分比）寫進來。整顆的大小用 --spark 一個數字縮放，
+   環和十字都是 --spark 的倍數，所以改一個數字就整組等比放大。
+   ⚠️ 環是用 ::before 的**放射漸層**畫的，不是 border —— 一層漸層就能畫兩圈粗細顏色不同的環，
+      中間留空才看得到底下的平面圖。漸層要寫 `closest-side`，
+      不然預設的 farthest-corner 會把 100% 算到方框的**角**（×1.414），百分比就對不上了。
+   ⚠️ 十字用 ::after 的兩條線性漸層，**中間留一段空**讓實心核心露出來 ——
+      ::before / ::after 都畫在元素背景之上，不留空的話線會壓過核心。 */
+.intro__spark{
+  --sx:50%; --sy:66%;
+  --spark:.8rem;                           /* 核心直徑，環和十字會跟著等比放大 */
+  position:absolute;left:var(--sx);top:var(--sy);transform:translate(-50%,-50%);
+  width:var(--spark);height:var(--spark);border-radius:50%;
+  /* 亮度只加在**顏色和濃度**上，不加在尺寸上：
+     --red 是 rgb(255,74,61)，紅色通道已經滿了，要再亮只能把另外兩個通道抬一點
+     （往橘紅走、不是往白走 —— 中心不要出現白點）。
+     ⚠️ **不要用 box-shadow 的擴散值（第 3 個數字）來加亮** —— 那會讓核心實際變大，
+        外擴的光還會壓到內環上，看起來像整組都變了。三層光暈的半徑維持原本的 1.1 / 3.4 / 7rem，
+        只把濃度拉高。 */
+  background:color-mix(in srgb, var(--red) 86%, #fff);
+  box-shadow:
+    0 0 1.1rem var(--red),
+    0 0 3.4rem color-mix(in srgb, var(--red) 78%, transparent),
+    0 0 7rem   color-mix(in srgb, var(--red) 46%, transparent);
+  animation:introSpark 2.4s ease-in-out infinite;
+}
+/* 兩圈同心環。500% = 核心的 5 倍寬，closest-side 讓漸層的 100% = 半徑 = 2.5 個核心直徑，
+   所以「內環半徑 1.13 個核心直徑」= 45.2%、「外環 1.68」= 67.2%。 */
+.intro__spark::before{
+  content:"";position:absolute;left:50%;top:50%;
+  width:500%;height:500%;transform:translate(-50%,-50%);
+  border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle closest-side,
+    transparent 0 43.9%,
+    var(--red) 43.9% 46.5%,      /* 內環 */
+    transparent 46.5% 66.1%,
+    var(--red) 66.1% 68.3%,      /* 外環 */
+    transparent 68.3%);
+  filter:drop-shadow(0 0 .25rem color-mix(in srgb, var(--red) 70%, transparent));
+  animation:introSparkRing 2.4s ease-in-out infinite;
+}
+/* 十字準星：橫線 + 直線。長度 400% ＝ 從中心往外 2.0 個核心直徑，外環是 1.68，
+   所以只比外環多伸出去一點點（原本 560% 太長了）。中間留空給核心。 */
+.intro__spark::after{
+  content:"";position:absolute;left:50%;top:50%;
+  width:400%;height:400%;transform:translate(-50%,-50%);
+  pointer-events:none;
+  --xh:calc(var(--spark) * .075);          /* 線的粗細 */
+  background:
+    linear-gradient(90deg,
+      var(--red) 0 37.5%, transparent 37.5% 62.5%, var(--red) 62.5% 100%) center / 100% var(--xh) no-repeat,
+    linear-gradient(180deg,
+      var(--red) 0 37.5%, transparent 37.5% 62.5%, var(--red) 62.5% 100%) center / var(--xh) 100% no-repeat;
+  filter:drop-shadow(0 0 .2rem color-mix(in srgb, var(--red) 60%, transparent));
+  animation:introSparkRing 2.4s ease-in-out infinite;
+}
+/* 紅點跟著輪播文字的三段換狀態，class 由 js/main.js 跟著同一個計時器掛上：
+     第 1 段（主標）  .is-big  —— 放大
+     第 2 段（副標）  無       —— 一般大小
+     第 3 段（結語）  .is-fade —— **維持上一個點不換位置**，而且**把脈動換成淡出**：
+                                  這一段紅點還是看得到的，只是從全亮線性淡掉，不再一閃一閃。
+   ⚠️ 淡出是**換一支動畫**（introSparkFade）不是用 transition —— 用 transition 的話
+      起點是「當下脈動到哪」，每次淡出的亮度都不一樣；換動畫才保證每次都從全亮開始。
+      forwards 讓它停在透明，直到 class 被拿掉。長度 --fade 比一段的 5 秒短一點，收乾淨再換下一輪。
+      淡完之後回到第 1 段是**直接跳出來**的（脈動重新接手），像感測器重新鎖定。
+   ⚠️ 放大是改 --spark（帶動 width/height），不是動 transform —— transform 被脈動動畫佔走了。
+      **--spark 一定要先用 @property 註冊成 <length>**，不然：
+        1. 沒註冊的自訂屬性不能 transition
+        2. 而且只要 width 上掛了 transition，var() 算出來的值會卡住不更新
+           （實測：--spark 變成 1.15rem 了，width 還是停在 .8rem 對應的 10.66px；
+            把 transition 拿掉才會跳成 15.33px）
+      註冊之後直接 transition --spark 本身，width/height 就會跟著平滑長大。 */
+@property --spark{ syntax:"<length>"; inherits:true; initial-value:1rem }
+.intro__spark{
+  --fade:4.6s;
+  transition:opacity .45s var(--ease), --spark .5s var(--ease);
+}
+.intro__spark.is-big{--spark:1.15rem}
+.intro__spark.is-fade{
+  transition:--spark .5s var(--ease);
+}
+.intro__spark.is-fade,
+.intro__spark.is-fade::before,
+.intro__spark.is-fade::after{
+  animation:introSparkFade var(--fade) linear forwards;
+}
+@keyframes introSparkFade{
+  from{ opacity:1 }
+  to  { opacity:0 }
+}
+
+@keyframes introSpark{
+  0%,100%{ transform:translate(-50%,-50%) scale(1);    opacity:1 }
+  50%    { transform:translate(-50%,-50%) scale(.82);  opacity:.72 }
+}
+/* 環和十字的呼吸跟核心反相：核心縮的時候往外推一點，看起來像一波一波送出去 */
+@keyframes introSparkRing{
+  0%,100%{ transform:translate(-50%,-50%) scale(1);    opacity:.9 }
+  50%    { transform:translate(-50%,-50%) scale(1.12); opacity:.6 }
+}
+
+/* ---------- 結語 ---------- */
+.intro__sign{
+  margin-top:2.6rem;
+  /* 這行 14 個字實測 寬度 ≈ 字級 ×(12.18 + 12.17 × 字距)
+     （「，」「。」比全形窄，字距的段數也不是整數，所以係數是量出來的不是算出來的）。
+     沿革：2.25rem/.1em（30.15rem 寬）→ 1.95rem/.27em（同寬）→ 1.3rem/.27em（再小 1/3，窄成 21.2rem）
+     → **1.3rem/.55em（字距加倍，回到約 24.5rem 寬）**。
+     要讓它回到最早的 30.15rem 寬的話，用上面那條式子回推是 .9em（會開到快一個全形空白）。 */
+  /* 顏色跟主標同一支 --brand-hi，**深淺改用透明度**（不是換色票）——
+     深色底上降透明度就是往背景沉下去，結語才不會跟主標搶。 */
+  font-size:1.3rem;font-weight:400;letter-spacing:.55em;color:var(--brand-hi);
+  /* 一點點光暈。⚠️ opacity 會**連 text-shadow 一起壓**，所以濃度要抓得比看起來需要的高一點
+     （55% × .7 ≈ 實際 38%）。要更亮就加濃度，要更散就加那個 .9rem。 */
+  text-shadow:0 0 .9rem color-mix(in srgb, var(--brand-hi) 55%, transparent);
+  opacity:.7;
+  text-align:center;
+}
+/* 整句都是主色。<b>（「寶鋪」）保留著，之後想讓品牌名跳出來改這一行就好 */
+.intro__sign b{font-weight:inherit;color:inherit}
+
+@media (prefers-reduced-motion:reduce){
+  .intro__spark,.intro__spark::before,.intro__spark::after{animation:none}
+}
+
+/* ---------- 三段文字疊在同一個位置往上滾動輪替（前言頁和結語頁都用） ----------
+   文字本身完全沿用 .intro__title / .intro__lead / .intro__sign（字級字距顏色都沒動），
+   只是**全部搬到主標的位置**、絕對定位疊在一起，用同一支動畫錯開時間輪流出現。
+   ⚠️ 三段共用一支 keyframes，靠 **negative animation-delay** 錯開，
+      所以「幾秒換一段」只有 --roll 一個數字要改，段數變了也只要改 nth-child 的延遲。
+   ⚠️ **不要用 overflow:hidden 裁上下** —— 它會連左右一起裁，主標是 white-space:nowrap、
+      常常比這個框寬，會被切掉。改用 clip-path 只裁上下、左右放開。
+   ⚠️ 三段本來在編輯模式裡是各自獨立的物件、各有各的縮放；併成一個框之後三段共用框的縮放，
+      所以用 --lead-k / --sign-k 把原本的比例補回來（不補的話結語會小掉快三成）。 */
+.intro__roll{
+  --roll:5s;                               /* 每一段停留幾秒（跟紅點換點的 INTRO_SPARK_EVERY 對齊） */
+  --lead-k:1; --sign-k:1;                  /* 併框之後補回原本的相對字級（見上） */
+  position:relative;
+  clip-path:inset(0 -100vw);               /* 只裁上下，左右不裁 */
+  margin-top:4.4rem;                       /* 跟原本主標接在標籤下面的間距一樣 */
+  width:100%;height:9rem;                  /* 裝得下最高的那一段（主標約 6.6rem）+ 光暈 */
+}
+.intro__roll > *{
+  position:absolute;inset:0;margin:0;
+  /* flex-end = **三段都貼著框的底部**，字級不一樣也不會上下跳動 */
+  display:flex;align-items:flex-end;justify-content:center;
+  animation:introRoll calc(var(--roll) * 3) var(--ease) infinite;
+}
+.intro__roll > *:nth-child(2){animation-delay:calc(var(--roll) * -2)}
+.intro__roll > *:nth-child(3){animation-delay:calc(var(--roll) * -1)}
+.intro__roll .intro__lead{font-size:calc(1.9rem * var(--lead-k))}
+/* ⚠️ 結語那段原本是用 opacity:.7 壓淡的，但動畫本身要動 opacity（會蓋掉它），
+   所以這裡改成把濃度做進顏色裡，效果一樣、opacity 就空出來給動畫用。 */
+.intro__roll .intro__sign{
+  font-size:calc(1.3rem * var(--sign-k));
+  opacity:1;
+  color:color-mix(in srgb, var(--brand-hi) 70%, transparent);
+  text-shadow:0 0 .9rem color-mix(in srgb, var(--brand-hi) 38%, transparent);
+}
+/* 前言頁的三段原本各自縮放過（主標 .822 / 副標 .807 / 結語 1.133），
+   併成一個框之後統一吃主標的縮放，這兩個係數把另外兩段的字級補回原本看到的大小 */
+.page--intro .intro__roll{--lead-k:.981; --sign-k:1.3775}
+/* 一段的時間軸：從下面推上來 → 停著 → 往上推出去 → 在外面等下一輪 */
+@keyframes introRoll{
+  0%       { transform:translateY(60%);   opacity:0 }
+  5%       { transform:translateY(0);     opacity:1 }
+  28%      { transform:translateY(0);     opacity:1 }
+  33.333%  { transform:translateY(-60%);  opacity:0 }
+  100%     { transform:translateY(-60%);  opacity:0 }
+}
+@media (prefers-reduced-motion:reduce){
+  /* 不滾了就退回三段各自排在上下 */
+  .intro__roll{height:auto;clip-path:none}
+  .intro__roll > *{position:relative;inset:auto;animation:none;opacity:1;transform:none}
+  .intro__roll .intro__lead{margin-top:4.6rem}
+  .intro__roll .intro__sign{margin-top:2.6rem}
+}
+
+/* ANLB 字標：assets/anlb-neon.png（透明背景，霓虹光暈已經烘在圖裡，不需要 CSS 再加光）。
+   ⚠️ 圖是 1942×809，但**亮線只佔中間 90.7% 寬 / 42.8% 高**，四周是光暈的留白。
+      所以框要照整張圖的比例（1942/809 = 2.4），字才不會被切到光暈；
+      「字看起來多寬」= 框寬 × 0.907。換圖的話這兩個數字要重量。
+   ⚠️ 這張圖的藍是烘死的，**不跟著主題色變**（之前那版是用遮罩上色所以會跟著變）。
+      要跟著主題走就得回去用遮罩／向量那條路。 */
+.intro__logo{
+  --logo:14.4rem;                          /* 整張圖的寬；字標本身約是它的 90.7% */
+  position:absolute;left:50%;bottom:4.2rem;transform:translateX(-50%);
+  width:var(--logo);aspect-ratio:1942 / 809;
+  pointer-events:none;
+  opacity:.6;                              /* 角落的識別，壓淡一點不要跟內容搶 */
+  background:url(../assets/anlb-neon.png) center / contain no-repeat;
 }
 
 /* ---------- 3D 區 ---------- */

@@ -26,9 +26,50 @@
 <div id="app" class="app">
 
   <!-- ============================================================
+       PAGE 0 — 前言 (I)　開機看到的第一頁，停 INTRO_HOLD 秒後自動進「火災黃金30秒」
+       ============================================================ -->
+  <section class="page page--intro is-active" data-page="intro">
+
+    <!-- 四角的 HUD 框角 + 底部刻度，純裝飾 -->
+    <i class="intro__corner intro__corner--tl" aria-hidden="true"></i>
+    <i class="intro__corner intro__corner--tr" aria-hidden="true"></i>
+    <i class="intro__corner intro__corner--bl" aria-hidden="true"></i>
+    <i class="intro__corner intro__corner--br" aria-hidden="true"></i>
+    <i class="intro__ticks" aria-hidden="true"></i>
+    <!-- ANLB 字標：直接用做好的霓虹圖（assets/anlb-neon.png，透明背景、光暈已經烘在圖裡）。
+         之前試過「PNG 遮罩 + feMorphology 描邊」和「描成向量再 stroke」，都留在 git 歷史裡；
+         既然有現成的成品圖，就不用再自己合成了。 -->
+    <div class="intro__logo" data-obj="introLogo" data-label="ANLB 標誌" role="img" aria-label="ANLB INSIDE"></div>
+    <div class="grain"></div>
+
+    <div class="intro__body">
+
+      <header class="intro__eyebrow" data-obj="introEyebrow" data-label="前言標籤">
+        <i class="intro__rule"></i>
+        <span class="intro__chip">前言 · INTRO</span>
+        <i class="intro__rule"></i>
+      </header>
+
+      <!-- 三段文字都疊在主標的位置，往上滾動輪流出現（順序 = 這裡的排列順序） -->
+      <div class="intro__roll" data-obj="introRoll" data-label="輪播文字">
+        <h1 class="intro__title">
+          <span class="intro__title-row"><span>意外發生</span><em>每一秒</em><span>都是關鍵</span></span>
+        </h1>
+        <p class="intro__lead">從即時感知到智慧引導，讓安全更早一步。</p>
+        <p class="intro__sign"><b>寶鋪</b>讓每一秒，都多一分安心。</p>
+      </div>
+
+      <!-- 平面圖：跟第一頁共用同一顆 renderer 的 flat 場景（頂視），動線整組收起來、只留建物線 -->
+      <div class="stage intro__plan" id="stage-intro" data-obj="introPlan" data-label="平面圖">
+        <i class="intro__spark" aria-hidden="true"></i>
+      </div>
+
+    </div>
+  </section>
+  <!-- ============================================================
        PAGE 1 — 第一頁 (ESC)
        ============================================================ -->
-  <section class="page page--main is-active" data-page="first">
+  <section class="page page--main" data-page="first">
     <div class="grain"></div>
 
     <div class="layout">
@@ -278,6 +319,44 @@
           <p class="home__guide-slogan chamfer" data-obj="homeGuideSlogan" data-label="標語"><span>每一秒都關鍵，安全逃生，守護生命！</span></p>
         </div>
       </footer>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       PAGE 3 — 結語 (O)　接在「恭喜通關」之後
+       版面和字級完全沿用前言頁那一套（.intro__* 是兩頁共用的樣式，不是只有前言在用）
+       ============================================================ -->
+  <section class="page page--outro" data-page="outro">
+
+    <i class="intro__corner intro__corner--tl" aria-hidden="true"></i>
+    <i class="intro__corner intro__corner--tr" aria-hidden="true"></i>
+    <i class="intro__corner intro__corner--bl" aria-hidden="true"></i>
+    <i class="intro__corner intro__corner--br" aria-hidden="true"></i>
+    <i class="intro__ticks" aria-hidden="true"></i>
+    <!-- 字標：跟前言頁同一個 data-obj，所以兩頁的位置大小是連動的 -->
+    <div class="intro__logo" data-obj="introLogo" data-label="ANLB 標誌" role="img" aria-label="ANLB INSIDE"></div>
+    <div class="grain"></div>
+
+    <div class="intro__body">
+
+      <header class="intro__eyebrow" data-obj="introEyebrow" data-label="標籤">
+        <i class="intro__rule"></i>
+        <span class="intro__chip">結語 · OUTRO</span>
+        <i class="intro__rule"></i>
+      </header>
+
+      <!-- 三段文字都疊在主標的位置，往上滾動輪流出現（順序 = 這裡的排列順序） -->
+      <div class="intro__roll" data-obj="introRoll" data-label="輪播文字">
+        <h1 class="intro__title">
+          <span class="intro__title-row"><span>預見風險才能領先</span><em>危險一步</em></span>
+        </h1>
+        <p class="intro__lead">從感知、判斷到引導，讓 AI 守護每一個回家的日常。</p>
+        <p class="intro__sign"><b>寶鋪</b>以智慧守護家的每一秒。</p>
+      </div>
+
+      <!-- 平面圖：跟前言頁共用同一個 flat 場景，但**動線是開著的**（前言頁只留建物線） -->
+      <div class="stage intro__plan" id="stage-outro" data-obj="introPlan" data-label="平面圖"></div>
+
     </div>
   </section>
 

@@ -1,6 +1,7 @@
 import { Viewer } from './viewer.js';
 import { createCountdown } from './countdown.js';
 import { createEditor } from './editor.js';
+import { createSync } from './sync.js';
 import { createGuideStore } from './guides.js';
 
 /* =========================================================
@@ -8,7 +9,7 @@ import { createGuideStore } from './guides.js';
    ENTER → 首頁 / ESC → 第一頁
    （原本按 0 / 1 的綠色、紅色空白頁已經拿掉）
    ========================================================= */
-const PAGES = ['first', 'home'];
+const PAGES = ['intro', 'first', 'home', 'outro'];
 
 /* 首頁逃生動線示範的節奏常數（editors 也用得到，所以放最上面） */
 /* 動線的節奏：**動線上的點照路徑長度等速跑**（秒數 = 長度 ÷ ROUTE_SPEED）。
@@ -23,14 +24,40 @@ const EXIT_HOLD = 500;                      // 小人跑到出口之後停幾毫
 /* 通關（綠）預設的運鏡：自己慢慢轉。編輯模式把「通關（綠）」存過之後就以存的為準 */
 const GREEN_MOTION = { autoRotate: true, speed: 0.3, swing: false };
 
-/* 歡迎流程：開機停在「火災黃金30秒」，倒數跑完一輪自動進首頁。
-   只會自動跳這一次，之後手動切頁就不再干涉。 */
+/* 歡迎流程：開機停在**前言頁**，INTRO_HOLD 秒後自動進「火災黃金30秒」，
+   倒數跑完一輪再自動進首頁。兩段都**只會自動跳這一次**，手動切過頁就不再干涉。 */
 const WELCOME_FROM = 'first';
 const WELCOME_TO = 'home';
 let welcomeDone = false;
+
+const INTRO_FROM = 'intro';
+const INTRO_TO = 'first';
+const INTRO_HOLD = 0;        // 前言頁停幾毫秒後自動進黃金30秒；**0 = 關掉自動跳頁**（要自己按 Esc）
+let introDone = false;
+let introTimer = null;
 const pageEls = new Map(
   PAGES.map((id) => [id, document.querySelector(`.page[data-page="${id}"]`)])
 );
+
+/* 住戶端 Pad（pad.html）的即時同步。
+   這一頁是**主控端**：只送不收，Pad 只收不送。走 WebSocket（js/sync.js → server.mjs 的 /ws）。
+   ⚠️ 不能用 localStorage —— 那個只在同一台瀏覽器裡有效，跨裝置傳不過去。
+   ⚠️ 頁面代號跟給 Pad 的場景名不一樣（first / home 是歷史包袱），這張表就是兩邊的對照。 */
+const SCENE = { intro: 'intro', first: 'golden30', home: 'aiRoute', outro: 'outro' };
+const sync = createSync({ role: 'display' });
+
+/** 把目前狀態推給 Pad。切頁、開始跑動線、通關、回待機都要叫一次。 */
+function pushSync() {
+  const live = routeState === 'running' || routeState === 'cleared';
+  sync.send({
+    scene: SCENE[current] ?? 'intro',
+    phase: routeState,                       // idle | running | cleared
+    route: lastRoute,
+    // 建議出口＝動線 1/2/3 走 A、4/5 走 B（跟右上狀態面板同一條規則）。
+    // 還沒開始跑就送 null —— Pad 那邊寧可顯示「規劃中」也不要報一個假的出口。
+    exit: live && lastRoute >= 0 ? (EXIT_A_ROUTES.includes(lastRoute) ? 'A' : 'B') : null,
+  });
+}
 
 /* 倒數：總長和分幾段。第一頁的逃生動線輪播要知道「一段有多長」，
    才能判斷這一段還放不放得下完整的一條（見 viewer.setRoutePhase）。 */
@@ -39,6 +66,9 @@ const countPhaseEls = [...document.querySelectorAll('#phases .phase')];
 const PHASE_SECONDS = COUNT_SECONDS / Math.max(1, countPhaseEls.length);
 
 const stage = document.getElementById('stage-first');
+const introStage = document.getElementById('stage-intro');
+const outroStage = document.getElementById('stage-outro');
+const introSpark = document.querySelector('.intro__spark');
 const homeStage = document.getElementById('stage-home');
 const viewer = new Viewer();
 const countdown = createCountdown({
@@ -62,6 +92,76 @@ const countdown = createCountdown({
   },
 });
 
+/* 前言頁的紅點：**擺在隨機一條逃生動線的起點上**，不是寫死的座標。
+   viewer 把起點投影成「佔畫布寬高的幾成」，這裡換成 --sx / --sy 寫回 CSS。
+   ⚠️ 模型是非同步載入的：開機時 goto('intro') 跑在載完之前，那一次算不出來，
+      所以 viewer.onRoutesReady 會再叫一次（跟 setRoutesVisible / setRoutePhase 同一個坑）。
+   ⚠️ 換視窗尺寸相機的 aspect 會變，投影要重算，所以 resize 也掛一次。 */
+let introSparkAt = -1;                      // 目前釘在第幾條（-1 = 還沒挑過）
+let introStep = 0;                          // 對到輪播文字的第幾段（0 主標 / 1 副標 / 2 結語）
+const INTRO_SPARK_BIG = 0;                  // 這一段紅點放大（主標）
+const INTRO_SPARK_FADE = 2;                 // 這一段**維持上一個點**、在這一段內慢慢淡掉（結語）
+// 不要挑的動線（0 起算）：動線 3 的起點就在平面圖正中間（投影約 x 50%），
+// 紅點壓在那裡會跟上面的主標、下面的結語疊在一起，所以排除掉。
+const INTRO_SKIP = [2];
+
+function placeIntroSpark(reroll = false) {
+  if (!introSpark) return;
+  const n = viewer.routeCount('flat');
+  if (!n) return;                           // 還沒載完，等 onRoutesReady
+  const pool = [...Array(n).keys()].filter((i) => !INTRO_SKIP.includes(i));
+  if (!pool.length) return;
+  if (reroll || !pool.includes(introSparkAt)) {
+    const cand = pool.filter((i) => i !== introSparkAt);   // 避開上一次那條
+    const from = cand.length ? cand : pool;                // 只剩一條可選時就還是它
+    introSparkAt = from[Math.floor(Math.random() * from.length)];
+  }
+  // 放大／淡出交給 css 的 .is-big / .is-fade，這裡只負責跟著節拍掛 class
+  introSpark.classList.toggle('is-big', introStep === INTRO_SPARK_BIG);
+  introSpark.classList.toggle('is-fade', introStep === INTRO_SPARK_FADE);
+  const p = viewer.routeStartScreen('flat', introSparkAt);
+  if (!p) return;
+  introSpark.style.setProperty('--sx', `${(p.x * 100).toFixed(2)}%`);
+  introSpark.style.setProperty('--sy', `${(p.y * 100).toFixed(2)}%`);
+}
+
+/* 停在前言頁的時候每 INTRO_SPARK_EVERY 毫秒換一個起火點（換的是「哪一條動線的起點」，
+   不是移動 —— 直接跳過去，像感測器重新鎖定）。離開這一頁就停掉。 */
+const INTRO_SPARK_EVERY = 5000;
+let introSparkTimer = null;
+
+/** 把輪播文字的動畫從頭跑一次 —— 讓「換紅點」和「換文字」踩在同一個起點上。
+    ⚠️ 要先把 animation 設成 none、強制重排再放開，直接改 class 是不會重播的
+       （跟按鈕抽動那邊同一個坑）。 */
+function restartIntroRoll() {
+  const roll = document.querySelector('.page--intro .intro__roll');
+  if (!roll) return;
+  for (const k of roll.children) k.style.animation = 'none';
+  void roll.offsetWidth;
+  for (const k of roll.children) k.style.animation = '';
+}
+
+function startIntroSpark() {
+  stopIntroSpark();
+  introStep = 0;                            // 輪播從第一段開始，紅點的節拍跟著歸零
+  restartIntroRoll();                       // 文字和紅點同時從第一段／新的一點開始
+  placeIntroSpark(true);                    // 進來先換一個
+  if (INTRO_SPARK_EVERY > 0) introSparkTimer = setInterval(() => {
+    if (current !== 'intro') return stopIntroSpark();
+    introStep = (introStep + 1) % 3;        // 三段一輪，跟 css 的 --roll 對齊
+    // 淡出那一段不重挑 —— 要的是「剛剛那個點慢慢消失」，不是換一個新的再消失
+    placeIntroSpark(introStep !== INTRO_SPARK_FADE);
+  }, INTRO_SPARK_EVERY);
+}
+
+function stopIntroSpark() {
+  clearInterval(introSparkTimer);
+  introSparkTimer = null;
+}
+
+viewer.onRoutesReady = (name) => { if (name === 'flat') placeIntroSpark(); };
+addEventListener('resize', () => placeIntroSpark());
+
 /* 參考線是跨頁共用的一份，每一頁都看得到全部的線（顏色依拉出來的那一頁區分） */
 const guideStore = createGuideStore({
   url: './layout-guides.json',
@@ -70,6 +170,28 @@ const guideStore = createGuideStore({
 
 /* 每一頁一個編輯器實例，物件版面各自存檔，參考線共用 */
 const editors = {
+  // ⚠️ 前言頁**不要傳 viewer**：它跟第一頁共用 flat 場景，兩個編輯器都存 view 會互相蓋掉。
+  //    前言頁只調物件版面，鏡頭一律以第一頁存的為準。
+  intro: createEditor({
+    root: document.querySelector('.page--intro'),
+    pageId: 'intro',
+    guideStore,
+    storageKey: 'fire30.layout.intro',
+    layoutUrl: './layout-intro.json',
+  }),
+  /* 結語頁：跟前言頁**共用同一份版面存檔**（layout-intro.json）。
+     兩頁的 data-obj 是同一組名字（introEyebrow / introRoll / introPlan / introLogo），
+     所以在任何一頁調大小位置，另一頁重新載入就是一樣的 —— 這就是「前言和結語連動」。
+     ⚠️ 想讓兩頁各自獨立的話，把這裡的 storageKey / layoutUrl 改回 fire30.layout.outro /
+        layout-outro.json，並且把 index.html 結語頁那幾個 data-obj 改回 outro* 開頭。
+     ⚠️ 一樣不傳 viewer（共用 flat 場景的鏡頭歸第一頁管）。 */
+  outro: createEditor({
+    root: document.querySelector('.page--outro'),
+    pageId: 'outro',
+    guideStore,
+    storageKey: 'fire30.layout.intro',
+    layoutUrl: './layout-intro.json',
+  }),
   first: createEditor({
     root: document.querySelector('.page--main'),
     pageId: 'first',
@@ -130,12 +252,32 @@ function goto(id) {
 
   // 同一顆 renderer 搬到當前頁的 3D 容器，其餘頁面就卸下來
   // 兩頁的佔位模型不同：第一頁是單層平面圖，首頁是三層大樓
-  const host = { first: stage, home: homeStage }[id];
+  const host = { intro: introStage, first: stage, home: homeStage, outro: outroStage }[id];
   if (host) {
     viewer.setScene(id === 'home' ? 'tower' : 'flat');
+    // 只有前言頁把動線收起來（只留建物線當底圖）；第一頁和結語頁都要看得到動線
+    viewer.setRoutesVisible('flat', id !== 'intro');
+    // 前言／結語的平面圖是用 CSS 把整張 canvas 壓淡的（見 css 的 .intro__plan canvas）。
+    // 那樣連動線也會一起淡掉，所以這兩頁**替動線單獨開一層光暈**，模型完全不碰。
+    viewer.setRouteBoost('flat', id === 'intro' || id === 'outro');
     viewer.mount(host);
+    if (id === 'intro') startIntroSpark();       // 進前言頁：換一條起火點，之後每 5 秒再換
+    else stopIntroSpark();
   } else {
     viewer.unmount();
+  }
+
+  pushSync();                               // 換頁就通知 Pad
+
+  // 前言頁停一下自動進「火災黃金30秒」；手動切走就取消，而且只跳這一次
+  clearTimeout(introTimer);
+  if (id === INTRO_FROM && !introDone && INTRO_HOLD > 0) {
+    introTimer = setTimeout(() => {
+      // 編輯版面時不要把人踢走（跟倒數的 onEnd 同一套判斷）
+      if (introDone || current !== INTRO_FROM || editors[current]?.isEditing()) return;
+      introDone = true;
+      goto(INTRO_TO);
+    }, INTRO_HOLD);
   }
 }
 
@@ -150,10 +292,14 @@ addEventListener('keydown', (e) => {
 
   switch (e.code) {
     // 手動切過頁就取消自動進首頁，避免之後按 Esc 回來又被跳走
-    case 'Enter': case 'NumpadEnter': welcomeDone = true; goto('home'); break;
-    case 'Escape':                    welcomeDone = true; goto('first'); break;
+    case 'Enter': case 'NumpadEnter': welcomeDone = true; introDone = true; goto('home'); break;
+    case 'Escape':                    welcomeDone = true; introDone = true; goto('first'); break;
+    // A = 回前言頁（回去之後不會再自動跳走，要自己按 Esc）
+    case 'KeyA':                      welcomeDone = true; introDone = true; goto('intro'); break;
+    // O = 結語頁（接在「恭喜通關」之後，不會自己跳過去，要按 O）
+    case 'KeyO':                      welcomeDone = true; introDone = true; goto('outro'); break;
     // B = 回到藍色介面：不在首頁就先進首頁，已經在首頁就把紅／綠收掉回到待機
-    case 'KeyB':                      welcomeDone = true;
+    case 'KeyB':                      welcomeDone = true; introDone = true;
                                       if (current !== 'home') goto('home'); else resetRouteDemo();
                                       break;
     case 'KeyR':                      if (current === 'first') countdown.reset(); break;
@@ -411,6 +557,7 @@ function playRouteDemo(repeat) {
             setTheme('green');                // 介面轉綠
             setFireTag(true);                 // 「已辨識」→ 綠色的「已遠離火源」
             setExitTags(lastRoute, true);     // A／B 出口都變成綠色的「暢通」
+            pushSync();                       // Pad 跟著切成「已抵達出口」
             showClear(true);                  // 恭喜通關
             startGreenFx();                   // 換「切換逃生動線」抽，同樣的節奏、綠色
           });
@@ -418,6 +565,7 @@ function playRouteDemo(repeat) {
       },
     });
     setExitTags(lastRoute);                   // playRoute 是同步回傳索引的，挑完就能更新面板
+    pushSync();                               // 挑好哪一條之後，Pad 才知道要報哪個出口
   });
 }
 
@@ -433,6 +581,7 @@ function resetRouteDemo() {
   stopGreenFx();                            // 綠色介面的抽動只在通關那段跑
   setFireTag(false);
   setExitTags(-1);                          // A／B 出口回到預設的「A 壅塞、B 暢通」
+  pushSync();
   setTheme(baseTheme);
   startIdleFx();                            // 回到待機（先重設，下一行的起火點會順便帶起標語和按鈕）
   showIdleFire();                           // 重抽一個起火點
@@ -530,12 +679,12 @@ function setTheme(name) {
 }
 let baseTheme = setTheme(params.get('theme') ?? localStorage.getItem('theme') ?? 'blue');
 
-/* 啟動：**歡迎頁一律是「火災黃金30秒」**（沒帶 ?page= 就進 first，本來就是這樣）。
+/* 啟動：**歡迎頁一律是前言頁**（沒帶 ?page= 就進 intro），停 INTRO_HOLD 秒後自動進黃金30秒。
    ?page= 仍然可以指定進入哪一頁（截圖／測試用），但**只在開這一次有效** ——
-   套用完就把它從網址上拿掉，所以重新整理、或把網址傳給別人打開，都會回到黃金30秒，
-   不會有人卡在首頁當歡迎頁。 */
+   套用完就把它從網址上拿掉，所以重新整理、或把網址傳給別人打開，都會回到前言頁，
+   不會有人卡在某一頁當歡迎頁。 */
 const startPage = params.get('page');
-goto(PAGES.includes(startPage) ? startPage : 'first');
+goto(PAGES.includes(startPage) ? startPage : 'intro');
 if (params.has('page')) {
   params.delete('page');                       // 只拿掉 page，其他參數（theme / edit / layout…）留著
   const q = params.toString();
@@ -553,6 +702,9 @@ document.fonts.ready.then(() => new Promise((r) => setTimeout(r, 60))).then(asyn
     if (params.get('layout') !== 'off') {
       await guideStore.load();
       await Promise.all(Object.values(editors).map((ed) => ed.restore()));
+      // 存檔裡也有 3D 視角（applyView）。前言頁的紅點是**投影**出來的，相機一換就要重算 ——
+      // onRoutesReady 那一次可能跑在套用視角之前（算出來會整個飛掉），所以這裡補一次。
+      placeIntroSpark();
     }
     // ?edit=1 直接進編輯模式；?edit=<物件代號> 再順便選取該物件
     const edit = params.get('edit');

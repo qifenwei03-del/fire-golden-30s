@@ -58,6 +58,9 @@ const IDLE_FIRE = { overlap: 0.25, pool: 3, every: 4.75 };   // 節拍改由 SWI
     所以畫到哪裡只要更新一次。
     width / halo 的單位是**螢幕像素**（拉遠拉近都一樣粗，要靠 material.resolution，見 _syncLineRes）；
     dash / gap 是模型單位（數字越小虛線越密）。 */
+/** 前言／結語頁替動線加的那層光暈。width 是螢幕像素，opacity 是相加混色的濃度。
+    覺得動線在那兩頁太暗就調這裡，**不要去動模型的壓淡**。 */
+const ROUTE_BOOST = { width: 7, opacity: 0.55 };
 const ROUTE_LINE = { width: 3.4, halo: 12, haloOpacity: 0.2, dash: 0.32, gap: 0.2 };
 
 /** 待機的「擺盪時間軸」：**1 和 4 是擺幅的兩端，2 和 3 把中間平分成三段**。
@@ -978,6 +981,20 @@ export class Viewer {
   /** 擺動幅度（左右各幾度） */
   setSwingAmp(deg) { this.swing.amp = THREE.MathUtils.degToRad(Math.max(0, deg)); }
 
+  /** 整組動線顯示／隱藏。前言頁跟第一頁共用同一個 flat 場景，但前言頁只要建物的線，
+      不要動線在那邊輪播 —— 收起來之後 slot 歸 -1，再打開時會重新挑一條。 */
+  setRoutesVisible(name, on) {
+    // ⚠️ **要記在 viewer 上**：模型是非同步載入的，開機第一頁（前言）呼叫進來的時候
+    //    _routeSets[name] 通常還不存在，只改 set 的話這一次會整個沒作用（動線照樣在跑）。
+    //    等 _buildRoutes 建好時再從這裡把狀態套上去。
+    (this._routesOff ??= {})[name] = !on;
+    const set = this._routeSets?.[name];
+    if (!set) return;
+    set.off = !on;
+    set.slot = -1;
+    if (!on) set.groups.forEach((g) => { g.visible = false; });
+  }
+
   /** 逃生起點圓點的時段（跟倒數同步）：0=0-10s藍 1=10-20s黃 2=20-30s紅（-1 = 還沒開始）。
      顏色一切換就換一條動線，並把輪播節奏從這一刻重新起算。
      seconds = 這個時段有多長（秒），用來算「還放不放得下完整的一條」。
@@ -1409,6 +1426,17 @@ export class Viewer {
     return { wall, slab, edge, wallEdgeAngle: 1 };   // 1° = 每條邊/每個轉角都畫（同佔位）
   }
 
+  /** 前言／結語頁把整張 canvas 壓淡（CSS）之後，第一頁那組動線細得看不見。
+      這支就是**替動線單獨加一層粗的相加光暈**，只在那兩頁打開 —— 模型的材質完全不碰。
+      ⚠️ 光暈是 _buildRoutes 就先做好放著（set.boost），這裡只切 visible。
+         現做的話 Line2 要重新算 lineDistances 和畫布解析度，切頁會頓一下。 */
+  setRouteBoost(name, on) {
+    (this._routeBoost ??= {})[name] = !!on;
+    const set = this._routeSets?.[name];
+    if (!set) return;                             // 模型還沒載完，記著等 _buildRoutes 之後補
+    for (const l of set.boost ?? []) l.visible = !!on;
+  }
+
   _tintBlueprint() {
     if (this._blueprintMats) {                 // 首頁：玻璃 + 白樓板
       const m = this._blueprintMats;
@@ -1435,7 +1463,8 @@ export class Viewer {
     this._routeSets = this._routeSets || {};
     const g = new THREE.Group();
     // recent = playRoute（首頁按按鈕）避開最近播過的；bag = 第一頁自動輪播的洗牌袋
-    const set = { groups: [], entries: [], startDots: [], recent: [], bag: [], cur: -1, slot: -1, phase, mode, play: null };
+    // off = 整組收起來（前言頁只要平面圖的建物線，不要動線在跑）
+    const set = { groups: [], entries: [], startDots: [], recent: [], bag: [], cur: -1, slot: -1, off: false, phase, mode, play: null };
     const lineColor = new THREE.Color(css('--exit', '#3dffa0'));   // 兩頁都用安全出口的綠（語意色，不隨主題變）
     for (const r of routes) {
       const rg = new THREE.Group();
@@ -1477,6 +1506,25 @@ export class Viewer {
         line.computeLineDistances();
         this.routes.push(line);                                  // 虛線流動
         rg.add(line);
+
+        // 同一條路再疊一層**粗的相加光暈**，平常關著（setRouteBoost 才打開）。
+        // 前言／結語頁的 canvas 被 CSS 壓到 .18，這條 1px 的細線會整條消失；
+        // 加這層之後同樣的壓淡下還看得到，而且模型的材質完全沒動。
+        const bg = new LineGeometry();
+        bg.setPositions(pos);
+        const bm = new LineMaterial({
+          color: lineColor, linewidth: ROUTE_BOOST.width, dashed: true,
+          dashSize: 0.7, gapSize: 0.45,                          // 跟細線同一組虛線節奏
+          transparent: true, opacity: ROUTE_BOOST.opacity,
+          depthWrite: false, blending: THREE.AdditiveBlending,
+        });
+        this._lineMats.push(bm);
+        const boost = new Line2(bg, bm);
+        boost.computeLineDistances();
+        boost.renderOrder = 1;                                   // 壓在細線下面
+        boost.visible = false;
+        rg.add(boost);
+        (set.boost ??= []).push(boost);
       }
       const start = this._makeDot(pts[0].toArray(), 0xff3b2a, { big: true });        // 起點大紅點
       rg.add(start.group);
@@ -1507,8 +1555,11 @@ export class Viewer {
     // 跟倒數連動的那一組：倒數早就開跑了（模型是後來才載完的），把格子對齊到時段的起點，
     // 這樣時段邊界一定落在格子的邊界上，不會有一條被切一半
     if (phase && this._phaseT0 != null) set.t0 = this._phaseT0;
+    set.off = !!this._routesOff?.[name];          // 建好之前就被叫去收起來的話，這裡補上
+    if (this._routeBoost?.[name]) for (const l of set.boost ?? []) l.visible = true;
     this._routeSets[name] = set;
     this._syncLineRes();                          // 粗線建好就把畫布尺寸餵進去
+    this.onRoutesReady?.(name);                   // 模型是非同步載入的，外面要等這一聲才拿得到起點
     return g;
   }
 
@@ -1551,6 +1602,31 @@ export class Viewer {
 
   /** 這一組有幾條逃生動線 */
   routeCount(name) { return this._routeSets?.[name]?.groups.length ?? 0; }
+
+  /** 第 i 條動線的**起點投影到畫布上的位置**，回 {x, y}（0~1，左上角是 0,0）；
+      還沒載入就回 null。前言頁的紅點用它把 CSS 畫的那顆擺到真的起火點上。
+      ⚠️ 起點存的是動線群組的區域座標，**要先 localToWorld** 才能投影。
+      ⚠️ 回的是「佔畫布寬高的幾成」，不是像素 —— 畫布尺寸變了要重算（相機的 aspect 會變）。 */
+  routeStartScreen(name, i) {
+    const set = this._routeSets?.[name];
+    const e = set?.entries?.[i];
+    if (!e) return null;
+    // ⚠️ **投影前一定要自己把相機的矩陣更新好**：Vector3.project() 直接吃
+    //    camera.matrixWorldInverse / projectionMatrix，而那兩支是 renderer.render() 才會更新的。
+    //    這支通常是「剛切到這一頁、還沒畫過一幀」就被呼叫，用到的會是上一個視角的舊矩陣，
+    //    算出來的位置會整個飛掉（實測 y 跑到 222%）。
+    const el = this.renderer.domElement;
+    if (el.clientWidth > 0 && el.clientHeight > 0) {
+      const asp = el.clientWidth / el.clientHeight;
+      if (Math.abs(this.camera.aspect - asp) > 1e-4) { this.camera.aspect = asp; this.camera.updateProjectionMatrix(); }
+    }
+    this.camera.updateMatrixWorld();
+    this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
+    set.root.updateWorldMatrix(true, false);
+    set.root.localToWorld(_v8.copy(e.pts[0]));
+    _v8.project(this.camera);
+    return { x: (_v8.x + 1) / 2, y: (1 - _v8.y) / 2 };
+  }
 
   /** 每一條動線的折線總長度（模型單位），用來換算「走完要幾秒」 */
   routeLengths(name) { return (this._routeSets?.[name]?.entries ?? []).map((e) => e.total); }
@@ -2056,13 +2132,18 @@ export class Viewer {
             if (set.runner) set.runner.group.position.copy(e.tip);
             if (tau >= 1 && !p.done) { p.done = true; const cb = p.onDone; p.onDone = null; cb?.(); }
           }
+        } else if (set.off) {                             // 前言頁：整組收起來（setRoutesVisible）
+          if (set.slot !== -1) { set.slot = -1; set.groups.forEach((gr) => { gr.visible = false; }); }
         } else if (t < set.gate) {                        // 載入後第一秒：全部隱藏
           if (set.slot !== -1) { set.slot = -1; set.groups.forEach((gr) => { gr.visible = false; }); }
         } else {                                          // 之後每 ROUTE_SLOT 秒換一條
           const slot = Math.floor((t - set.t0) / ROUTE_SLOT);
           // 跟倒數連動的那一組：**這個時段剩下的時間不夠跑完整一格就不要換了**，
           // 讓上一條多留一下就好 —— 五條變四條沒關係，有一條閃過去才難看。
-          const fits = !set.phase || t + ROUTE_SLOT <= (this._phaseEnd ?? Infinity) + 1e-3;
+          // ⚠️ 只有「時段還在跑」的時候才限制。倒數停在別的頁面時 _phaseEnd 會留在過去的時間，
+          //    不判斷 live 的話結語頁（也用 flat）的動線會**整組停住不換**。
+          const live = this._phaseEnd != null && t < this._phaseEnd;
+          const fits = !set.phase || !live || t + ROUTE_SLOT <= this._phaseEnd + 1e-3;
           if (slot !== set.slot && fits) { set.slot = slot; this._pickRouteInSet(set); }
         }
         const fire = set.fire;                          // 待機起火點：紅點閃 + 煙霧飄
