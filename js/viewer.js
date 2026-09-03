@@ -58,9 +58,14 @@ const IDLE_FIRE = { overlap: 0.25, pool: 3, every: 4.75 };   // 節拍改由 SWI
     所以畫到哪裡只要更新一次。
     width / halo 的單位是**螢幕像素**（拉遠拉近都一樣粗，要靠 material.resolution，見 _syncLineRes）；
     dash / gap 是模型單位（數字越小虛線越密）。 */
-/** 前言／結語頁替動線加的那層光暈。width 是螢幕像素，opacity 是相加混色的濃度。
-    覺得動線在那兩頁太暗就調這裡，**不要去動模型的壓淡**。 */
-const ROUTE_BOOST = { width: 7, opacity: 0.55 };
+/** 前言／結語頁替動線加的**覆蓋層**：陣列裡每一筆就是在原本的細線上再疊一層。
+    width 是螢幕像素、opacity 是相加混色的濃度，**由粗到細往上疊** ——
+    粗的負責散開來的光暈，細的貼著原本那條線把芯提亮。
+    覺得動線在那兩頁太暗就加一筆或把 opacity 調高，**不要去動模型的壓淡**。 */
+const ROUTE_BOOST = [
+  { width: 7,   opacity: 0.55 },      // 外圈散光
+  { width: 2.6, opacity: 0.75 },      // 貼著細線的芯
+];
 const ROUTE_LINE = { width: 3.4, halo: 12, haloOpacity: 0.2, dash: 0.32, gap: 0.2 };
 
 /** 待機的「擺盪時間軸」：**1 和 4 是擺幅的兩端，2 和 3 把中間平分成三段**。
@@ -1507,24 +1512,28 @@ export class Viewer {
         this.routes.push(line);                                  // 虛線流動
         rg.add(line);
 
-        // 同一條路再疊一層**粗的相加光暈**，平常關著（setRouteBoost 才打開）。
+        // 同一條路再疊幾層**相加的覆蓋層**，平常關著（setRouteBoost 才打開）。
         // 前言／結語頁的 canvas 被 CSS 壓到 .18，這條 1px 的細線會整條消失；
-        // 加這層之後同樣的壓淡下還看得到，而且模型的材質完全沒動。
-        const bg = new LineGeometry();
-        bg.setPositions(pos);
-        const bm = new LineMaterial({
-          color: lineColor, linewidth: ROUTE_BOOST.width, dashed: true,
-          dashSize: 0.7, gapSize: 0.45,                          // 跟細線同一組虛線節奏
-          transparent: true, opacity: ROUTE_BOOST.opacity,
-          depthWrite: false, blending: THREE.AdditiveBlending,
+        // 疊上去之後同樣的壓淡下還看得到，而且模型的材質完全沒動。
+        // ⚠️ 每一層都要**自己一份 geometry** —— Line2 把 lineDistances 算進 geometry 裡，
+        //    共用的話後建的那層會把前一層的虛線節奏蓋掉。
+        ROUTE_BOOST.forEach((b, bi) => {
+          const bg = new LineGeometry();
+          bg.setPositions(pos);
+          const bm = new LineMaterial({
+            color: lineColor, linewidth: b.width, dashed: true,
+            dashSize: 0.7, gapSize: 0.45,                        // 跟細線同一組虛線節奏
+            transparent: true, opacity: b.opacity,
+            depthWrite: false, blending: THREE.AdditiveBlending,
+          });
+          this._lineMats.push(bm);
+          const boost = new Line2(bg, bm);
+          boost.computeLineDistances();
+          boost.renderOrder = 1 + bi;                            // 粗的先畫，細的疊上去
+          boost.visible = false;
+          rg.add(boost);
+          (set.boost ??= []).push(boost);
         });
-        this._lineMats.push(bm);
-        const boost = new Line2(bg, bm);
-        boost.computeLineDistances();
-        boost.renderOrder = 1;                                   // 壓在細線下面
-        boost.visible = false;
-        rg.add(boost);
-        (set.boost ??= []).push(boost);
       }
       const start = this._makeDot(pts[0].toArray(), 0xff3b2a, { big: true });        // 起點大紅點
       rg.add(start.group);
