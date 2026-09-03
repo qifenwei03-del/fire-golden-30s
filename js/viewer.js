@@ -66,14 +66,22 @@ const IDLE_FIRE = { overlap: 0.25, pool: 3, every: 4.75 };   // 節拍改由 SWI
     ⚠️ 芯的 width 就是**看起來的線寬**。光暈的 opacity 壓低（0.2 上下）才是暈開的感覺，
        調太高會變成一條粗線。 */
 const ROUTE_BOOST = [
-  { width: 8,   opacity: 0.16, add: true  },   // 外圈光暈：暈開就好，不要有明顯的邊
-  { width: 3,   opacity: 1,    add: false },   // 實心的芯：這條決定看起來多粗、什麼顏色
+  { width: 5,   opacity: 0.12, add: true  },   // 外圈光暈：暈開就好，不要有明顯的邊
+  { width: 1.8, opacity: 1,    add: false },   // 實心的芯：這條決定看起來多粗、什麼顏色
 ];
+
+/** 前言／結語頁動線兩端的標記：起點圓點 → 細虛線 → 箭頭 → 出口標誌。
+    **第一頁不會出現**（第一頁維持原本的紅起點／綠終點）。單位是模型座標。 */
+const ROUTE_MARK = {
+  dot:   { core: 0.26, halo: 0.68, haloOp: 0.22 },   // 起點：實心圓 + 外圈暈
+  arrow: { len: 0.62, half: 0.28 },                  // 末端箭頭：長度、單邊寬度
+  sign:  { size: 2.6, gap: 1.5, lift: 1.2 },         // 出口標誌：大小、離線末端多遠、離地多高
+};
 
 /** 前言／結語頁「只壓建物、不壓動線」的畫圖順序：
     建物先畫 → 蓋一層 veil 把**已經畫好的東西**整片壓淡 → 動線最後畫上去。
     動線在 veil 之後，所以完全不受壓淡影響（見 setPlanDim）。 */
-const PLAN_LAYER = { veil: 5, route: 6, boost: 7 };
+const PLAN_LAYER = { veil: 5, route: 6, boost: 7, mark: 9 };
 const ROUTE_LINE = { width: 3.4, halo: 12, haloOpacity: 0.2, dash: 0.32, gap: 0.2 };
 
 /** 待機的「擺盪時間軸」：**1 和 4 是擺幅的兩端，2 和 3 把中間平分成三段**。
@@ -187,6 +195,30 @@ function runnerTexture() {
   _runnerCanvas = c;                 // 光暈那張直接拿這張去模糊，形狀才會跟著人走
   _runnerTex = new THREE.CanvasTexture(c);
   return _runnerTex;
+}
+
+/** 出口標誌：圓角方框 + 裡面的小人（直接借上面那張，不用再畫一次）。
+    整張是白色剪影，實際顏色由 sprite 的 color 決定。
+    ⚠️ 外框的線寬要跟小人的筆畫差不多，遠看才像同一組符號；差太多會像「一個框裡塞了東西」。 */
+let _exitTex = null;
+function exitSignTexture() {
+  if (_exitTex) return _exitTex;
+  runnerTexture();                                  // 先確保小人那張畫好了
+  const S = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const ctx = c.getContext('2d');
+  ctx.strokeStyle = '#fff';
+  ctx.lineJoin = ctx.lineCap = 'round';
+  const w = 0.052 * S, pad = 0.13 * S;
+  ctx.lineWidth = w;
+  ctx.beginPath();
+  ctx.roundRect(pad, pad, S - 2 * pad, S - 2 * pad, 0.055 * S);
+  ctx.stroke();
+  const k = 0.52;                                   // 小人在框裡佔多大
+  ctx.drawImage(_runnerCanvas, S * (1 - k) / 2, S * (1 - k) / 2, S * k, S * k);
+  _exitTex = new THREE.CanvasTexture(c);
+  return _exitTex;
 }
 
 /** 小人的光暈：把小人本體縮小置中、模糊、疊兩次。
@@ -1494,7 +1526,67 @@ export class Viewer {
     (this._routeBoost ??= {})[name] = !!on;
     const set = this._routeSets?.[name];
     if (!set) return;                             // 模型還沒載完，記著等 _buildRoutes 之後補
-    for (const l of set.boost ?? []) l.visible = !!on;
+    this._applyBoost(set, !!on);
+  }
+
+  /** 覆蓋層 + 兩端標記一起切。**兩端是二選一**：
+      打開＝前言／結語那套（起點圓點 → 箭頭 → 出口標誌），關掉＝第一頁原本的紅起點／綠終點。
+      兩套同時出現會變成起點有紅有藍、終點有綠點又有標誌，很亂。 */
+  _applyBoost(set, on) {
+    for (const l of set.boost ?? []) l.visible = on;
+    for (const m of set.marks ?? []) m.visible = on;
+    for (const d of set.startDots ?? []) d.group.visible = !on;
+    for (const d of set.endDots ?? []) d.group.visible = !on;
+  }
+
+  /** 動線兩端的標記，回一組還沒掛上去的物件（起點圓點、末端箭頭、出口標誌）。
+      ⚠️ 每一支都要 transparent:true —— 不透明的物件會被排進**不透明那一輪**，
+         在 veil 之前就畫完了，renderOrder 排再後面也沒用，會跟著建物一起被壓淡。
+      ⚠️ 出口標誌用 Sprite（永遠面向鏡頭）。平面圖是斜視角，貼在地上的話會被壓成一片斜的。 */
+  _makeRouteMarks(pts, color) {
+    const out = [];
+    const last = pts[pts.length - 1];
+    const prev = pts[pts.length - 2] ?? pts[0];
+    const dir = last.clone().sub(prev).setY(0).normalize();
+
+    // 起點：實心圓 + 外圈暈
+    const d = ROUTE_MARK.dot;
+    const core = new THREE.Mesh(new THREE.SphereGeometry(d.core, 18, 12),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1, depthWrite: false }));
+    core.position.copy(pts[0]);
+    core.renderOrder = PLAN_LAYER.mark + 1;
+    const halo = new THREE.Mesh(new THREE.SphereGeometry(d.halo, 18, 12),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: d.haloOp, depthWrite: false, blending: THREE.AdditiveBlending }));
+    halo.position.copy(pts[0]);
+    halo.renderOrder = PLAN_LAYER.mark;
+    out.push(halo, core);
+
+    // 末端箭頭：貼在地上（跟虛線同一個平面），所以透視是跟著動線走的
+    const a = ROUTE_MARK.arrow;
+    const side = new THREE.Vector3(-dir.z, 0, dir.x);
+    const p1 = last.clone();
+    const p2 = last.clone().addScaledVector(dir, -a.len).addScaledVector(side,  a.half);
+    const p3 = last.clone().addScaledVector(dir, -a.len).addScaledVector(side, -a.half);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute([...p1.toArray(), ...p2.toArray(), ...p3.toArray()], 3));
+    const arrow = new THREE.Mesh(geo,
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1, depthWrite: false, side: THREE.DoubleSide }));
+    arrow.renderOrder = PLAN_LAYER.mark + 1;
+    out.push(arrow);
+
+    // 出口標誌：站在動線末端再往前一點的位置
+    const s = ROUTE_MARK.sign;
+    const sign = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: exitSignTexture(), color, transparent: true, depthWrite: false, depthTest: false,
+    }));
+    sign.scale.setScalar(s.size);
+    sign.position.copy(last).addScaledVector(dir, s.gap);
+    sign.position.y += s.lift;
+    sign.renderOrder = PLAN_LAYER.mark + 2;
+    out.push(sign);
+
+    for (const o of out) o.visible = false;
+    return out;
   }
 
   _tintBlueprint() {
@@ -1599,7 +1691,11 @@ export class Viewer {
         : { ...start });
       const end = this._makeDot(pts[pts.length - 1].toArray(), 0x3dffa0);            // 終點綠點
       rg.add(end.group);
+      (set.endDots ??= []).push(end);
       this.fires.push({ halo: end.halo, light: end.light });                         // 綠終點：柔和脈動
+      if (!glow) {                                  // 前言／結語頁那一組（第一頁共用，但標記平常藏著）
+        for (const m of this._makeRouteMarks(pts, lineColor)) { rg.add(m); (set.marks ??= []).push(m); }
+      }
       // 每個轉折點的累積長度，用來把「跑了幾成」換算成座標
       const cum = [0];
       for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i].distanceTo(pts[i - 1]));
@@ -1622,7 +1718,7 @@ export class Viewer {
     // 這樣時段邊界一定落在格子的邊界上，不會有一條被切一半
     if (phase && this._phaseT0 != null) set.t0 = this._phaseT0;
     set.off = !!this._routesOff?.[name];          // 建好之前就被叫去收起來的話，這裡補上
-    if (this._routeBoost?.[name]) for (const l of set.boost ?? []) l.visible = true;
+    if (this._routeBoost?.[name]) this._applyBoost(set, true);
     this._routeSets[name] = set;
     this._syncLineRes();                          // 粗線建好就把畫布尺寸餵進去
     this.onRoutesReady?.(name);                   // 模型是非同步載入的，外面要等這一聲才拿得到起點
